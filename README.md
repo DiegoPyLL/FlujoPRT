@@ -1,7 +1,7 @@
 # Proyecto: Análisis de Flujo Vehicular con Cámaras TÜV Rheinland
 
 ## Descripción general
-Este proyecto automatiza la captura, almacenamiento y análisis de imágenes provenientes de las cámaras públicas de las plantas de revisión técnica asociadas a TÜV Rheinland Chile. El objetivo es generar un timelapse diario y aplicar reconocimiento vehicular automatizado para estimar el flujo vehicular por planta, día y hora.
+Este proyecto automatiza la captura, almacenamiento y análisis de imágenes provenientes de las cámaras públicas de las plantas de revisión técnica asociadas a TÜV Rheinland Chile. El objetivo es generar un timelapse diario y aplicar reconocimiento vehicular automatizado para estimar el flujo vehicular por planta, día y hora. Todas las imágenes serán obtenidas de todas las plantas de revisión técnica que se encuentren dentro de ésta página: https://www.prt.tuv.com/red-de-plantas-revision-tecnicas .
 
 ## Componentes principales
 - **Captura de imágenes en vivo:** se accede a las cámaras disponibles en el dominio `pti-cameras.cl.tuv.com`. Cada imagen se solicita con un parámetro de tiempo (pitime o timestamp Unix) para evitar caché y reflejar la actualización más reciente.
