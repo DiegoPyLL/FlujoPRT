@@ -7,11 +7,17 @@ import ssl
 
 
 BASE_URL = "https://pti-cameras.cl.tuv.com/camaras"
+
+# Directorio base para guardar las imágenes
 BASE_DIR = r"C:/Users/Laptop/Desktop/Trabajos/ProyectosPersonales/FlujoPRT_Main/RecompilacionFotos"
 
+# intervalo de captura en segundos
 INTERVALO = 60
+
+# cada 10 minutos intenta capturar fuera de horario
 REINTENTO_FUERA_HORARIO = 600
-MAX_ERRORES = 5
+
+MAX_ERRORES = 60
 
 
 camaras = {
@@ -50,13 +56,20 @@ HORARIOS = {
 }
 
 
+
+
+# Configuración SSL para ignorar la verificación del certificado. 
 ssl_context = ssl.create_default_context()
 ssl_context.check_hostname = False
 ssl_context.verify_mode = ssl.CERT_NONE
 
+
+
 # 0 = Lunes, 6 = Domingo
 def es_domingo():
     return datetime.now().weekday() == 6
+
+
 
 
 def dentro_horario(planta):
@@ -73,6 +86,8 @@ def dentro_horario(planta):
     hora_fin = datetime.strptime(fin, "%H:%M").time()
 
     return hora_inicio <= ahora.time() <= hora_fin
+
+
 
 
 def segundos_hasta_apertura(planta):
@@ -94,52 +109,83 @@ def segundos_hasta_apertura(planta):
     return REINTENTO_FUERA_HORARIO
 
 
+
+
 async def capturar_camara(session, planta, cam_id):
+    # Crea la carpeta destino para la planta, reemplazando espacios por guiones bajos
     carpeta = os.path.join(BASE_DIR, planta.replace(" ", "_"))
     os.makedirs(carpeta, exist_ok=True)
 
+    # Contador de errores consecutivos de red o HTTP
     contador_errores = 0
 
+    # Loop principal de captura para la cámara
     while True:
 
+        # Si es domingo, se deshabilita completamente la captura y se termina la tarea
         if es_domingo():
             print(f"{planta} domingo. Captura deshabilitada.")
             break
 
+        # Si la planta está fuera de horario operativo
         if not dentro_horario(planta):
+            # Calcula cuántos segundos esperar antes de reintentar
             espera = segundos_hasta_apertura(planta)
+
+            # Si no hay próxima apertura válida, se corta la tarea
             if espera is None:
                 break
-            print(f"{planta} fuera de horario. Reintentando en {int(espera/60)} min.")
+
+            # Espera antes de volver a evaluar el horario
+            print(f"{planta} está fuera de horario. Reintentando captura en {int(espera/60)} min.")
             await asyncio.sleep(espera)
             continue
 
+        # Timestamp usado como parámetro para evitar cache del servidor
         pitime = int(time.time())
+
+        # Nombre de archivo con fecha, hora y microsegundos para evitar colisiones
         fecha = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+
+        # URL de la imagen de la cámara
         url = f"{BASE_URL}/{cam_id}/imagen.jpg"
 
         try:
+            # Solicitud HTTP asíncrona para obtener la imagen
             async with session.get(url, params={"pitime": pitime}) as resp:
                 if resp.status == 200:
+                    # Lee el binario de la imagen
                     data = await resp.read()
+
+                    # Guarda la imagen en disco
                     with open(os.path.join(carpeta, f"{fecha}.jpg"), "wb") as f:
                         f.write(data)
+
                     print(f"{planta} - Imagen guardada: {fecha}.jpg")
+
+                    # Reset del contador de errores al tener éxito
                     contador_errores = 0
                 else:
+                    # Error HTTP distinto de 200
                     contador_errores += 1
                     print(f"{planta} HTTP {resp.status}")
+
         except Exception as e:
+            # Error de red, timeout u otro problema de conexión
             contador_errores += 1
             print(f"{planta} error de conexión: {e}")
 
+        # Si se alcanzan demasiados errores consecutivos, se detiene la captura
         if contador_errores >= MAX_ERRORES:
             print(f"{planta} detenido por {MAX_ERRORES} errores consecutivos.")
             break
 
+        # Espera el intervalo definido antes de la siguiente captura
         await asyncio.sleep(INTERVALO)
 
 
+
+# Creación de la sesión y ejecución de tareas
 async def main():
     connector = aiohttp.TCPConnector(ssl=ssl_context, limit=50)
     timeout = aiohttp.ClientTimeout(total=20)
@@ -153,5 +199,7 @@ async def main():
         )
 
 
+
+# Ejecución del script
 asyncio.run(main())
 print("Recompilación finalizada.")
