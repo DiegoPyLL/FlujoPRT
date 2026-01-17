@@ -31,22 +31,22 @@ camaras = {
     "Yumbel": "10.57.17.70"
 }
 
-
+# Se inicia 20 minutos antes y despues para capturar el flujo completo vehicular
 HORARIOS = {
-    "Huechuraba": {"semana": ("07:30", "16:30"), "sabado": ("07:30", "16:30")},
-    "La Florida": {"semana": ("08:00", "17:00"), "sabado": ("07:30", "16:30")},
-    "La Pintana": {"semana": ("08:00", "17:00"), "sabado": ("07:30", "16:30")},
-    "Pudahuel": {"semana": ("08:00", "17:00"), "sabado": ("07:30", "16:30")},
-    "Quilicura": {"semana": ("07:30", "16:30"), "sabado": ("07:30", "16:30")},
-    "Recoleta": {"semana": ("08:00", "17:00"), "sabado": ("07:30", "16:30")},
-    "San Joaquin": {"semana": ("08:00", "17:00"), "sabado": ("07:30", "16:30")},
-    "Temuco": {"semana": ("08:30", "18:00"), "sabado": ("08:30", "13:30")},
-    "Villarica": {"semana": ("07:30", "17:30"), "sabado": ("08:00", "13:30")},
-    "Chillan": {"semana": ("07:00", "17:00"), "sabado": ("07:30", "13:30")},
-    "Yungay": {"semana": ("08:00", "17:00"), "sabado": ("08:30", "13:30")},
-    "Concepcion": {"semana": ("08:00", "20:00"), "sabado": ("08:30", "16:30")},
-    "San Pedro de la Paz": {"semana": ("08:00", "17:00"), "sabado": ("08:30", "13:30")},
-    "Yumbel": {"semana": ("08:00", "17:00"), "sabado": ("08:30", "13:30")}
+    "Huechuraba": {"semana": ("07:10", "16:50"), "sabado": ("07:10", "16:50")},
+    "La Florida": {"semana": ("07:40", "17:20"), "sabado": ("07:10", "16:50")},
+    "La Pintana": {"semana": ("07:40", "17:20"), "sabado": ("07:10", "16:50")},
+    "Pudahuel": {"semana": ("07:40", "17:20"), "sabado": ("07:10", "16:50")},
+    "Quilicura": {"semana": ("07:10", "16:50"), "sabado": ("07:10", "16:50")},
+    "Recoleta": {"semana": ("07:40", "17:20"), "sabado": ("07:10", "16:50")},
+    "San Joaquin": {"semana": ("07:40", "17:20"), "sabado": ("07:10", "16:50")},
+    "Temuco": {"semana": ("08:10", "18:20"), "sabado": ("08:10", "13:50")},
+    "Villarica": {"semana": ("07:10", "17:50"), "sabado": ("07:40", "13:50")},
+    "Chillan": {"semana": ("07:00", "17:20"), "sabado": ("07:10", "13:50")},
+    "Yungay": {"semana": ("07:40", "17:20"), "sabado": ("08:10", "13:50")},
+    "Concepcion": {"semana": ("07:40", "20:20"), "sabado": ("08:10", "16:50")},
+    "San Pedro de la Paz": {"semana": ("07:40", "17:20"), "sabado": ("08:10", "13:50")},
+    "Yumbel": {"semana": ("07:40", "17:20"), "sabado": ("08:10", "13:50")}
 }
 
 
@@ -54,7 +54,7 @@ ssl_context = ssl.create_default_context()
 ssl_context.check_hostname = False
 ssl_context.verify_mode = ssl.CERT_NONE
 
-
+# 0 = Lunes, 6 = Domingo
 def es_domingo():
     return datetime.now().weekday() == 6
 
