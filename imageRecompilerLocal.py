@@ -6,16 +6,14 @@ import os
 import ssl
 
 
-#Base URL y configuración
 BASE_URL = "https://pti-cameras.cl.tuv.com/camaras"
 BASE_DIR = r"C:/Users/Laptop/Desktop/Trabajos/ProyectosPersonales/FlujoPRT_Main/RecompilacionFotos"
 
+INTERVALO = 60
+REINTENTO_FUERA_HORARIO = 600
+MAX_ERRORES = 5
 
-# El servidor actualiza la imagen cada 60 con un pequeño desfase
-INTERVALO = 60      
 
-
-#Direccion de servidor de cada planta
 camaras = {
     "Huechuraba": "10.57.6.222_Cam08",
     "La Florida": "10.57.0.222_Cam03",
@@ -34,7 +32,6 @@ camaras = {
 }
 
 
-# Rangos de horarios por planta
 HORARIOS = {
     "Huechuraba": {"semana": ("07:30", "16:30"), "sabado": ("07:30", "16:30")},
     "La Florida": {"semana": ("08:00", "17:00"), "sabado": ("07:30", "16:30")},
@@ -53,17 +50,18 @@ HORARIOS = {
 }
 
 
-# Desactiva la validación del certificado SSL para permitir conexiones 
-# HTTPS a servidores con certificados internos o no confiables.
 ssl_context = ssl.create_default_context()
 ssl_context.check_hostname = False
 ssl_context.verify_mode = ssl.CERT_NONE
 
 
-# Verifica si la planta se encuentra dentro del horario de atención
+def es_domingo():
+    return datetime.now().weekday() == 6
+
+
 def dentro_horario(planta):
     ahora = datetime.now()
-    dia = ahora.weekday()  # 0=lunes ... 5=sábado ... 6=domingo
+    dia = ahora.weekday()
 
     if dia == 6:
         return False
@@ -77,64 +75,83 @@ def dentro_horario(planta):
     return hora_inicio <= ahora.time() <= hora_fin
 
 
-# Función para capturar imágenes de una cámara específica
+def segundos_hasta_apertura(planta):
+    ahora = datetime.now()
+    dia = ahora.weekday()
+
+    if dia == 6:
+        return None
+
+    tipo = "sabado" if dia == 5 else "semana"
+    inicio, _ = HORARIOS[planta][tipo]
+    hora_inicio = datetime.strptime(inicio, "%H:%M").time()
+    apertura = datetime.combine(ahora.date(), hora_inicio)
+
+    if ahora.time() <= hora_inicio:
+        delta = (apertura - ahora).total_seconds()
+        return max(60, min(delta, REINTENTO_FUERA_HORARIO))
+
+    return REINTENTO_FUERA_HORARIO
+
+
 async def capturar_camara(session, planta, cam_id):
     carpeta = os.path.join(BASE_DIR, planta.replace(" ", "_"))
     os.makedirs(carpeta, exist_ok=True)
 
+    contador_errores = 0
 
     while True:
 
-        if not dentro_horario(planta):
-            print(f"{planta} fuera de horario. Captura finalizada.")
+        if es_domingo():
+            print(f"{planta} domingo. Captura deshabilitada.")
             break
+
+        if not dentro_horario(planta):
+            espera = segundos_hasta_apertura(planta)
+            if espera is None:
+                break
+            print(f"{planta} fuera de horario. Reintentando en {int(espera/60)} min.")
+            await asyncio.sleep(espera)
+            continue
 
         pitime = int(time.time())
         fecha = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         url = f"{BASE_URL}/{cam_id}/imagen.jpg"
-        
-        # Hace un GET request para obtener la imagen y la guarda en la 
-        # carpeta correspondiente
+
         try:
             async with session.get(url, params={"pitime": pitime}) as resp:
                 if resp.status == 200:
                     data = await resp.read()
                     with open(os.path.join(carpeta, f"{fecha}.jpg"), "wb") as f:
                         f.write(data)
-                        print(f"{planta} - Imagen guardada: {fecha}.jpg")
+                    print(f"{planta} - Imagen guardada: {fecha}.jpg")
                     contador_errores = 0
                 else:
-                    print(planta, resp.status)
                     contador_errores += 1
+                    print(f"{planta} HTTP {resp.status}")
         except Exception as e:
-            print(f"Sucedió un error al tratar de obtener la imagen de {planta}. Error: {e}")
-            
-            #En caso de 5 errores consecutivos, se detiene la captura para esa cámara
-            if contador_errores == 5:
-                print(f"Se han producido {contador_errores} errores consecutivos al intentar obtener la imagen de {planta}.")
-                break
-            
-        print("\n")
+            contador_errores += 1
+            print(f"{planta} error de conexión: {e}")
+
+        if contador_errores >= MAX_ERRORES:
+            print(f"{planta} detenido por {MAX_ERRORES} errores consecutivos.")
+            break
+
         await asyncio.sleep(INTERVALO)
 
 
-#Crea una sesión HTTP asíncrona compartida con SSL deshabilitado y un pool de conexiones limitado, 
-# y ejecuta en paralelo las tareas de captura de imágenes para todas las cámaras.
 async def main():
     connector = aiohttp.TCPConnector(ssl=ssl_context, limit=50)
-    timeout = aiohttp.ClientTimeout(total=10)
+    timeout = aiohttp.ClientTimeout(total=20)
 
     async with aiohttp.ClientSession(
         connector=connector,
         timeout=timeout
     ) as session:
-        tareas = [
-            capturar_camara(session, planta, cam_id)
-            for planta, cam_id in camaras.items()
-        ]
-        await asyncio.gather(*tareas)
+        await asyncio.gather(
+            *[capturar_camara(session, planta, cam_id) for planta, cam_id in camaras.items()]
+        )
 
 
-#Ejecución
 asyncio.run(main())
 print("Recompilación finalizada.")
