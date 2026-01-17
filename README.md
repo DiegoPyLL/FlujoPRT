@@ -1,59 +1,76 @@
-# Proyecto: Análisis de Flujo Vehicular con Cámaras TÜV Rheinland
+# FlujoPRT
 
-## Descripción general
-Este proyecto automatiza la captura, almacenamiento y análisis de imágenes provenientes de las cámaras públicas de las plantas de revisión técnica asociadas a TÜV Rheinland Chile. El objetivo es generar un timelapse diario y aplicar reconocimiento vehicular automatizado para estimar el flujo vehicular por planta, día y hora. Todas las imágenes serán obtenidas de todas las plantas de revisión técnica que se encuentren dentro de ésta página: https://www.prt.tuv.com/red-de-plantas-revision-tecnicas .
+    Sistema automatizado para capturar imágenes desde cámaras públicas de plantas de revisión técnica, generar timelapses diarios y aplicar análisis visual con reconocimiento vehicular.
 
-## Componentes principales
-- **Captura de imágenes en vivo:** se accede a las cámaras disponibles en el dominio `pti-cameras.cl.tuv.com`. Cada imagen se solicita con un parámetro de tiempo (pitime o timestamp Unix) para evitar caché y reflejar la actualización más reciente.
-- **Almacenamiento local y timelapse:** las imágenes se guardan con su timestamp y se convierten en secuencias de video usando ffmpeg. Cada video representa un intervalo de tiempo determinado (por ejemplo, un turno completo o un día de operación).
-- **Análisis de flujo vehicular:** los videos se procesan con un modelo de reconocimiento vehicular basado en visión por computador (por ejemplo, YOLOv8, OpenCV o TensorFlow Object Detection). El sistema cuenta los vehículos detectados por cuadro y asocia la información a su timestamp, construyendo un registro de tráfico por franja horaria.
+**Tópicos:** `computer-vision` `image-capture` `timelapse` `vehicle-recognition` `aws` `cloud-processing` `automation` `python` `opencv`
 
-## Flujo de ejecución
-1. **Descarga periódica:** un script Python descarga imágenes cada cierto intervalo (por defecto, cada 30 segundos).
-2. **Generación del timelapse:** al completar el ciclo de captura, se usa ffmpeg para unir las imágenes en un video MP4.
-3. **Procesamiento por IA:** un módulo de reconocimiento vehicular detecta y clasifica los vehículos presentes en cada cuadro del video.
-4. **Almacenamiento y análisis:** los resultados se almacenan en una base de datos o CSV para análisis posterior, permitiendo generar métricas como flujo promedio por hora, picos de tráfico y variaciones diarias.
+## Características
 
-## Dependencias
-- Python 3.10+
-- requests
-- OpenCV
-- ffmpeg
-- NumPy
-- (Opcional) PyTorch + YOLOv8 para detección avanzada
+    Captura paralela de múltiples plantas con`asyncio` y `aiohttp`. Compresión JPEG optimizada con calidad configurable y eliminación de metadata. Detección de duplicados por hash MD5 antes de subir a S3. Almacenamiento particionado por fecha en AWS S3. Respeta horarios de operación (lunes-sábado, omite domingos). Backoff exponencial en errores y métricas en memoria. Compatible con `uvloop` en Linux. Control de concurrencia con semáforos y colas.
 
-Instalación rápida:
+## Instalación
+
 ```bash
-pip install requests opencv-python numpy ultralytics
-sudo apt install ffmpeg
+git clone https://github.com/tu_usuario/FlujoPRT.git
+cd FlujoPRT
+pip install -r requirements.txt
 ```
 
-## Estructura del proyecto
-```text
-/tuv_flow_analysis
-│
-├── capturas/             # Imágenes descargadas
-├── videos/               # Timelapses generados
-├── data/                 # Resultados de análisis (CSV, logs)
-├── capture.py            # Script de descarga automática
-├── process.py            # Detección vehicular y conteo
-└── README.md
-```
+## Configuración
 
-## Métricas resultantes
-- Flujo vehicular por minuto, hora y día.
-- Densidad promedio de tráfico por planta.
-- Identificación de horarios punta y períodos de baja actividad.
+Variables de entorno:
 
-## Posibles extensiones
-- Clasificación de tipo de vehículo (auto, camioneta, camión, moto).
-- Integración con panel web para visualización de datos.
-- Alertas en tiempo real ante congestión o interrupciones.
+* `S3_BUCKET`: Bucket S3 (default: `flujo-prt-imagenes`)
+* `S3_PREFIX`: Prefijo de almacenamiento (default: `capturas`)
+* `INTERVALO`: Segundos entre capturas (default: `60`)
+* `TZ`: Zona horaria (default: `America/Santiago`)
+* `JPEG_QUALITY`: Calidad JPEG 0-100 (default: `75`)
+* `MAX_DESCARGAS`: Descargas simultáneas (default: `10`)
+* `QUEUE_SIZE`: Tamaño de cola de subida (default: `100`)
+* `NUM_UPLOADERS`: Workers de subida S3 (default: `3`)
+* `METRICAS_INTERVALO`: Intervalo de métricas en segundos (default: `900`)
 
-## Consideraciones legales y éticas
-- Las cámaras utilizadas son públicas y pertenecen a instalaciones de TÜV Rheinland.
-- No se capturan datos personales ni se realiza identificación facial.
-- El propósito es únicamente estadístico y de optimización operativa.
+## Cámaras y horarios
 
-## Licencias
-- Por ver, quiero que sea de codigo abierto pero que no sea utilizado por las empresas de manera libre
+### Región Metropolitana
+
+| Planta       | URL                                                                 | Lun-Vie     | Sábado     |
+| ------------ | ------------------------------------------------------------------- | ----------- | ----------- |
+| Huechuraba   | https://pti-cameras.cl.tuv.com/camaras/10.57.6.222_Cam08/imagen.jpg | 07:30-16:30 | 07:30-16:30 |
+| La Florida   | https://pti-cameras.cl.tuv.com/camaras/10.57.0.222_Cam03/imagen.jpg | 08:00-17:00 | 07:30-16:30 |
+| La Pintana   | https://pti-cameras.cl.tuv.com/camaras/10.57.5.222_Cam09/imagen.jpg | 08:00-17:00 | 07:30-16:30 |
+| Pudahuel     | https://pti-cameras.cl.tuv.com/camaras/10.57.4.222_Cam07/imagen.jpg | 08:00-17:00 | 07:30-16:30 |
+| Quilicura    | https://pti-cameras.cl.tuv.com/camaras/10.57.2.222_Cam06/imagen.jpg | 07:30-16:30 | 07:30-16:30 |
+| Recoleta     | https://pti-cameras.cl.tuv.com/camaras/10.57.7.222_Cam09/imagen.jpg | 08:00-17:00 | 07:30-16:30 |
+| San Joaquín | https://pti-cameras.cl.tuv.com/camaras/10.57.3.222_Cam07/imagen.jpg | 08:00-17:00 | 07:30-16:30 |
+
+### Región de La Araucanía
+
+| Planta    | URL                                                                  | Lun-Vie     | Sábado     |
+| --------- | -------------------------------------------------------------------- | ----------- | ----------- |
+| Temuco    | https://pti-cameras.cl.tuv.com/camaras/10.57.32.222_Cam01/imagen.jpg | 08:30-18:00 | 08:30-13:30 |
+| Villarica | https://pti-cameras.cl.tuv.com/camaras/10.57.33.222_Cam04/imagen.jpg | 07:30-17:30 | 08:00-13:30 |
+
+### Región del Biobío
+
+| Planta              | URL                                                           | Lun-Vie                    | Sábado                    | Notas                    |
+| ------------------- | ------------------------------------------------------------- | -------------------------- | -------------------------- | ------------------------ |
+| Chillán            | https://pti-cameras.cl.tuv.com/camaras/10.57.12.70/imagen.jpg | 07:00-17:00                | 07:30-13:30                | 07:00-08:00 solo clase B |
+| Yungay              | https://pti-cameras.cl.tuv.com/camaras/10.57.20.70/imagen.jpg | 08:00-17:00                | 08:30-13:30                | -                        |
+| Concepción         | https://pti-cameras.cl.tuv.com/camaras/10.57.19.70/imagen.jpg | 08:00-20:00 / 08:00-16:30* | 08:30-16:30 / 08:30-13:00* | *Camiones, taxis, buses  |
+| San Pedro de la Paz | https://pti-cameras.cl.tuv.com/camaras/10.57.16.70/imagen.jpg | 08:00-17:00                | 08:30-13:30                | -                        |
+| Yumbel              | https://pti-cameras.cl.tuv.com/camaras/10.57.17.70/imagen.jpg | 08:00-17:00                | 08:30-13:30                | -                        |
+
+### No funcionales
+
+Castro y Osorno no tienen cámaras disponibles.
+
+
+Listado de plantas general
+https://www.prt.tuv.com/red-de-plantas-revision-tecnicas?page=1
+
+Link base cámaras
+Base: https://pti-cameras.cl.tuv.com/camaras/
+
+Identificador IP: 10.57.x.xxx_CamXX
+Nombre imagen cacheada: imagen.jpg
