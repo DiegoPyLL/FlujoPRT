@@ -93,7 +93,7 @@ HORARIOS = {
     "San Joaquin": {"semana": ("07:40", "17:20"), "sabado": ("07:10", "16:50")},
     "Temuco": {"semana": ("08:10", "18:20"), "sabado": ("08:10", "13:50")},
     "Villarica": {"semana": ("07:10", "17:50"), "sabado": ("07:40", "13:50")},
-    "Chillan": {"semana": ("07:00", "17:20"), "sabado": ("07:10", "13:50")},
+    "Chillan": {"semana": ("06:40", "17:20"), "sabado": ("07:10", "13:50")},
     "Yungay": {"semana": ("07:40", "17:20"), "sabado": ("08:10", "13:50")},
     "Concepcion": {"semana": ("07:40", "20:20"), "sabado": ("08:10", "16:50")},
     "San Pedro de la Paz": {"semana": ("07:40", "17:20"), "sabado": ("08:10", "13:50")},
