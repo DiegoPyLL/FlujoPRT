@@ -41,8 +41,14 @@ QUEUE_SIZE = int(os.getenv("QUEUE_SIZE", "100"))
 NUM_UPLOADERS = int(os.getenv("NUM_UPLOADERS", "3"))
 METRICAS_INTERVALO = int(os.getenv("METRICAS_INTERVALO", "900"))  # 15 min
 
+# Modificación en imageRecompilerCloud.py
 os.environ["TZ"] = TZ
-time.tzset()
+
+try:
+    time.tzset()
+except AttributeError:
+    # Windows no soporta tzset(), se ignora para permitir el funcionamiento local
+    pass
 
 
 # =========================
@@ -516,3 +522,5 @@ if __name__ == "__main__":
     finally:
         executor.shutdown(wait=True)
         logger.warning("Proceso finalizado")
+        
+        

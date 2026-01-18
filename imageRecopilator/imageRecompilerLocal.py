@@ -166,9 +166,9 @@ async def capturar_camara(session, planta, cam_id):
                         exito = True
                         break
                     else:
-                        print(f"{planta} intento {intento+1}/5 HTTP {resp.status}")
+                        print(f"{planta} intento {intento + 1}/5 HTTP {resp.status}")
             except Exception as e:
-                print(f"{planta} intento {intento+1}/5 error: {e}")
+                print(f"{planta} intento {intento + 1}/5 error: {e}")
 
             # Espera 2.5 segundos entre reintentos
             await asyncio.sleep(2.5)
@@ -202,4 +202,5 @@ async def main():
 
 
 # Inicia la ejecución del programa
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
