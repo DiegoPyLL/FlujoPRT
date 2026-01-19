@@ -13,6 +13,37 @@ from botocore.exceptions import BotoCoreError, ClientError
 from PIL import Image
 import io
 
+"""
+
+FUNCIONAMIENTO GENERAL:
+-----------------------
+1. Loop principal infinito que nunca termina
+2. Antes de cada captura verifica horario de cada planta individualmente
+3. Ejecuta 14 tareas asíncronas en paralelo (una por planta)
+4. Cada tarea captura imágenes cada 60 segundos cuando está en horario
+5. Workers independientes suben las imágenes a S3 desde una cola compartida
+
+TEMPORIZADORES:
+---------------
+- INDEPENDIENTES: Cada planta verifica su horario y espera hasta su apertura
+- COLA COMPARTIDA: Todos comparten la misma cola de subida a S3
+- WORKERS S3: 3 workers procesan subidas en paralelo
+
+ARQUITECTURA:
+-------------
+- Capturas: 14 tareas paralelas (una por planta)
+- Compresión: ThreadPool de 2 workers (CPU-bound)
+- Subidas S3: 3 workers asíncronos procesando cola
+- Deduplicación: Hash MD5 para evitar duplicados
+
+OPTIMIZACIONES:
+---------------
+- Compresión única: Solo se comprime una vez, antes de encolar
+- uvloop: 2-4x performance en Linux
+- Semáforo: Limita descargas simultáneas
+- Backoff exponencial: En caso de errores
+"""
+
 # uvloop para 2-4x performance en Linux
 try:
     import uvloop
@@ -30,25 +61,25 @@ BASE_URL = "https://pti-cameras.cl.tuv.com/camaras"
 S3_BUCKET = os.getenv("S3_BUCKET", "flujo-prt-imagenes")
 S3_PREFIX = os.getenv("S3_PREFIX", "capturas")
 
-
+# Intervalo entre capturas (temporizador independiente de cada planta)
 INTERVALO = int(os.getenv("INTERVALO", "60"))  # segundos
 
+# Margen antes de apertura para despertar (20 minutos)
+MARGEN_PREVIO = int(os.getenv("MARGEN_PREVIO", "1200"))  # 20 min en segundos
 
 TZ = os.getenv("TZ", "America/Santiago")
-JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "75"))  # calidad compresión
+JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "75"))
 MAX_DESCARGAS_SIMULTANEAS = int(os.getenv("MAX_DESCARGAS", "10"))
 QUEUE_SIZE = int(os.getenv("QUEUE_SIZE", "100"))
 NUM_UPLOADERS = int(os.getenv("NUM_UPLOADERS", "3"))
 METRICAS_INTERVALO = int(os.getenv("METRICAS_INTERVALO", "900"))  # 15 min
 
-# Modificación en imageRecompilerCloud.py
 os.environ["TZ"] = TZ
 
 try:
     time.tzset()
 except AttributeError:
-    # Windows no soporta tzset(), se ignora para permitir el funcionamiento local
-    pass
+    pass  # Windows no soporta tzset()
 
 
 # =========================
@@ -56,7 +87,7 @@ except AttributeError:
 # =========================
 
 logging.basicConfig(
-    level=logging.WARNING,  # Solo WARNING+ en producción
+    level=logging.WARNING,
     format="%(asctime)s %(levelname)s %(message)s"
 )
 
@@ -232,11 +263,19 @@ metricas = Metricas()
 
 
 # =========================
-# Utilidades
+# Utilidades de horarios
 # =========================
 
+def es_domingo():
+    """Verifica si hoy es domingo"""
+    return datetime.now().weekday() == 6
+
+
 def dentro_horario(planta):
-    """Verifica si estamos dentro del horario de operación"""
+    """
+    Verifica si la hora actual está dentro del horario de operación de una planta.
+    Cada planta verifica su propio horario de forma independiente.
+    """
     ahora = datetime.now()
     dia = ahora.weekday()
 
@@ -253,49 +292,87 @@ def dentro_horario(planta):
 
 
 def segundos_hasta_apertura(planta):
-    """Calcula segundos hasta la próxima apertura de la planta"""
+    """
+    Calcula cuántos segundos faltan para que abra la planta.
+    Si ya pasó el horario de hoy, calcula para mañana.
+    Si mañana es domingo, calcula para el lunes.
+    """
     ahora = datetime.now()
     dia = ahora.weekday()
-    
-    # Si es domingo, esperar hasta el lunes
-    if dia == 6:
-        dias_hasta_apertura = 1
-        tipo = "semana"
-    # Si es sábado
-    elif dia == 5:
-        tipo = "sabado"
-        dias_hasta_apertura = 0
-    else:
-        tipo = "semana"
-        dias_hasta_apertura = 0
-    
-    inicio_str, _ = HORARIOS[planta][tipo]
-    h_ini = datetime.strptime(inicio_str, "%H:%M").time()
-    
-    # Crear datetime de apertura
-    apertura = datetime.combine(ahora.date(), h_ini)
-    
-    # Si ya pasó la hora de apertura hoy
-    if ahora.time() > h_ini:
-        # Calcular próxima apertura (mañana o lunes)
-        if dia == 5:  # Sábado -> Lunes
-            dias_hasta_apertura = 2
-            tipo = "semana"
-            inicio_str, _ = HORARIOS[planta][tipo]
-            h_ini = datetime.strptime(inicio_str, "%H:%M").time()
-        elif dia == 6:  # Domingo -> Lunes
-            dias_hasta_apertura = 1
-            tipo = "semana"
-            inicio_str, _ = HORARIOS[planta][tipo]
-            h_ini = datetime.strptime(inicio_str, "%H:%M").time()
-        else:  # Lun-Vie -> Mañana
-            dias_hasta_apertura = 1
-            
-        apertura = datetime.combine(ahora.date() + timedelta(days=dias_hasta_apertura), h_ini)
-    
-    segundos = (apertura - ahora).total_seconds()
-    return max(60, int(segundos))  # Mínimo 60 segundos
 
+    # Domingo: no abre
+    if dia == 6:
+        return None
+
+    tipo = "sabado" if dia == 5 else "semana"
+    inicio, _ = HORARIOS[planta][tipo]
+
+    hora_inicio = datetime.strptime(inicio, "%H:%M").time()
+    apertura = datetime.combine(ahora.date(), hora_inicio)
+
+    if ahora.time() < hora_inicio:
+        # Abre hoy
+        return int((apertura - ahora).total_seconds())
+    else:
+        # Ya pasó la hora de hoy, calcula para mañana
+        dia_siguiente = (dia + 1) % 7
+        
+        if dia_siguiente == 6:  # Mañana es domingo
+            return None
+            
+        tipo_siguiente = "sabado" if dia_siguiente == 5 else "semana"
+        inicio_siguiente, _ = HORARIOS[planta][tipo_siguiente]
+        
+        hora_inicio_siguiente = datetime.strptime(inicio_siguiente, "%H:%M").time()
+        apertura_siguiente = datetime.combine(ahora.date(), hora_inicio_siguiente) + timedelta(days=1)
+        
+        segundos = int((apertura_siguiente - ahora).total_seconds())
+        return segundos
+
+
+def todas_fuera_de_horario():
+    """
+    Verifica si TODAS las plantas están fuera de horario.
+    Itera sobre todas las plantas para verificar su estado.
+    """
+    for planta in camaras.keys():
+        if dentro_horario(planta):
+            return False
+    return True
+
+
+def obtener_tiempos_restantes():
+    """
+    Obtiene los tiempos restantes hasta la apertura para TODAS las plantas.
+    """
+    tiempos = {}
+    for planta in camaras.keys():
+        if es_domingo():
+            tiempos[planta] = None
+        elif dentro_horario(planta):
+            tiempos[planta] = 0
+        else:
+            tiempos[planta] = segundos_hasta_apertura(planta)
+    return tiempos
+
+
+def obtener_menor_tiempo_espera():
+    """
+    Obtiene el MENOR tiempo de espera entre todas las plantas.
+    Este valor se usa para coordinar cuando alguna planta debe despertar.
+    """
+    tiempos = obtener_tiempos_restantes()
+    tiempos_validos = [t for t in tiempos.values() if t is not None and t > 0]
+    
+    if not tiempos_validos:
+        return None
+    
+    return min(tiempos_validos)
+
+
+# =========================
+# Utilidades de procesamiento
+# =========================
 
 def hash_imagen(data: bytes) -> str:
     """Calcula hash MD5 de la imagen comprimida"""
@@ -328,6 +405,7 @@ async def recomprimir_jpeg(data: bytes) -> bytes:
 
 
 def generar_s3_key(planta: str, fecha_str: str) -> str:
+    """Genera la key particionada para S3"""
     dt = datetime.strptime(fecha_str, "%Y%m%d_%H%M%S")
     denom = DENOMINADORES.get(planta, planta.replace(" ", "_"))
     filename = f"{denom}_{fecha_str}.jpg"
@@ -341,22 +419,21 @@ def generar_s3_key(planta: str, fecha_str: str) -> str:
         f"{filename}"
     )
 
-        
 
 # =========================
-# Worker de subida S3 (sin recompresión)
+# Worker de subida S3
 # =========================
 
 async def worker_subida_s3(worker_id: int):
     """
-    Worker que procesa la cola de subidas a S3
-    IMPORTANTE: Recibe imagen YA comprimida, solo sube
+    Worker que procesa la cola de subidas a S3.
+    COLA COMPARTIDA: Todos los workers procesan la misma cola.
+    Recibe imagen YA comprimida, solo sube.
     """
     session = aioboto3.Session()
     
     logger.warning(f"Worker S3 #{worker_id} iniciado")
     
-    # Cliente S3 compartido para todas las subidas de este worker
     async with session.client('s3') as s3:
         while RUNNING or not cola_subida.empty():
             try:
@@ -388,7 +465,6 @@ async def worker_subida_s3(worker_id: int):
                     cola_subida.task_done()
                     
             except asyncio.TimeoutError:
-                # Timeout normal, continuar
                 continue
             except Exception as e:
                 logger.error(f"[W{worker_id}] Error: {e}")
@@ -397,26 +473,74 @@ async def worker_subida_s3(worker_id: int):
 
 
 # =========================
-# Captura con compresión única
+# Captura con lógica de horarios
 # =========================
 
 async def capturar_camara(session, planta, cam_id):
     """
-    Captura imágenes de una cámara
-    OPTIMIZACIÓN CRÍTICA: Comprime UNA SOLA VEZ, envía comprimida a cola
+    TAREA INDEPENDIENTE - Captura imágenes de una planta específica.
+    
+    Esta función corre en paralelo para cada una de las 14 plantas.
+    Cada instancia:
+    - Tiene su propio loop infinito
+    - Verifica su propio horario de forma independiente
+    - Captura cada INTERVALO (60 seg) cuando está en horario
+    - Espera hasta su apertura cuando está fuera de horario
+    - Comprime UNA SOLA VEZ y envía a cola compartida
     """
     ultimo_hash = None
     errores_consecutivos = 0
     backoff_actual = INTERVALO
 
     while RUNNING:
-
-        # Verificar horario
+        # Verificar horario de ESTA planta específica
         if not dentro_horario(planta):
-            segundos_espera = segundos_hasta_apertura(planta)
-            await asyncio.sleep(segundos_espera)
+            # Fuera de horario - calcular espera hasta apertura
+            if es_domingo():
+                # Domingo: calcular hasta lunes
+                ahora = datetime.now()
+                lunes = ahora + timedelta(days=1)
+                while lunes.weekday() != 0:
+                    lunes += timedelta(days=1)
+                
+                # Apertura del lunes para esta planta
+                inicio_str, _ = HORARIOS[planta]["semana"]
+                hora_apertura = datetime.strptime(inicio_str, "%H:%M").time()
+                apertura_lunes = datetime.combine(lunes.date(), hora_apertura)
+                
+                # Restar margen previo
+                despertar = apertura_lunes - timedelta(seconds=MARGEN_PREVIO)
+                segundos = max(60, int((despertar - ahora).total_seconds()))
+                
+                horas = segundos // 3600
+                logger.info(f"{planta} domingo, esperando {horas}h hasta apertura")
+                await asyncio.sleep(segundos)
+            else:
+                # Calcular tiempo hasta próxima apertura
+                segundos_espera = segundos_hasta_apertura(planta)
+                
+                if segundos_espera is None:
+                    # Mañana es domingo, esperar hasta lunes
+                    ahora = datetime.now()
+                    lunes = ahora + timedelta(days=2)
+                    
+                    inicio_str, _ = HORARIOS[planta]["semana"]
+                    hora_apertura = datetime.strptime(inicio_str, "%H:%M").time()
+                    apertura_lunes = datetime.combine(lunes.date(), hora_apertura)
+                    
+                    despertar = apertura_lunes - timedelta(seconds=MARGEN_PREVIO)
+                    segundos_espera = max(60, int((despertar - ahora).total_seconds()))
+                
+                # Restar margen previo
+                espera_real = max(60, segundos_espera - MARGEN_PREVIO)
+                minutos = espera_real // 60
+                
+                logger.info(f"{planta} fuera de horario, esperando {minutos}min")
+                await asyncio.sleep(espera_real)
+            
             continue
 
+        # Dentro de horario - capturar
         pitime = int(time.time())
         fecha_str = datetime.now().strftime("%Y%m%d_%H%M%S")
         url = f"{BASE_URL}/{cam_id}/imagen.jpg"
@@ -475,7 +599,7 @@ async def capturar_camara(session, planta, cam_id):
             logger.critical(f"{planta} 10 errores consecutivos")
             await asyncio.sleep(1800)  # 30 min
 
-        # Jitter
+        # Jitter para evitar sincronización exacta
         jitter = hash(planta) % 5
         await asyncio.sleep(backoff_actual + jitter)
         
@@ -488,7 +612,16 @@ async def capturar_camara(session, planta, cam_id):
 # =========================
 
 async def main():
-    """Inicia el sistema de captura con configuración optimizada"""
+    """
+    Función principal - Coordina el sistema completo.
+    
+    FLUJO:
+    1. Crea sesión HTTP compartida
+    2. Lanza workers S3 (procesan cola compartida)
+    3. Lanza 14 tareas de captura en PARALELO
+    4. Cada tarea maneja su propio horario independientemente
+    5. Loop infinito que NUNCA termina
+    """
     
     # Timeouts diferenciados
     timeout = aiohttp.ClientTimeout(
@@ -506,10 +639,11 @@ async def main():
     )
 
     logger.warning("="*60)
-    logger.warning("INICIANDO SISTEMA CAPTURA CCTV")
+    logger.warning("INICIANDO SISTEMA CAPTURA CCTV - AWS S3")
     logger.warning(f"Event Loop: {'uvloop' if 'uvloop' in str(asyncio.get_event_loop_policy()) else 'asyncio'}")
     logger.warning(f"Cámaras: {len(camaras)} | Intervalo: {INTERVALO}s")
     logger.warning(f"JPEG Quality: {JPEG_QUALITY} | Workers S3: {NUM_UPLOADERS}")
+    logger.warning(f"Margen previo: {MARGEN_PREVIO/60:.0f} min")
     logger.warning(f"S3: s3://{S3_BUCKET}/{S3_PREFIX}")
     logger.warning(f"Métricas cada: {METRICAS_INTERVALO/60:.0f} min")
     logger.warning("="*60)
@@ -519,22 +653,22 @@ async def main():
         timeout=timeout
     ) as session:
         
-        # Workers S3
+        # Workers S3 (procesan cola compartida)
         workers_s3 = [
             asyncio.create_task(worker_subida_s3(i))
             for i in range(NUM_UPLOADERS)
         ]
         
-        # Tasks captura
+        # Tasks captura (cada una maneja su horario independientemente)
         tasks_captura = [
             asyncio.create_task(capturar_camara(session, planta, cam_id))
             for planta, cam_id in camaras.items()
         ]
         
-        # Ejecutar todo
+        # Ejecutar todo - loop infinito
         await asyncio.gather(*tasks_captura, *workers_s3, return_exceptions=True)
         
-        # Vaciar cola
+        # Vaciar cola antes de cerrar
         await cola_subida.join()
 
 
@@ -546,5 +680,3 @@ if __name__ == "__main__":
     finally:
         executor.shutdown(wait=True)
         logger.warning("Proceso finalizado")
-        
-        
