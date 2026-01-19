@@ -106,6 +106,23 @@ HORARIOS = {
     "Yumbel": {"semana": ("07:40", "17:20"), "sabado": ("08:10", "13:50")}
 }
 
+DENOMINADORES = {
+    "Huechuraba": "HCH",
+    "La Florida": "LFL",
+    "La Pintana": "LPT",
+    "Pudahuel": "PUD",
+    "Quilicura": "QLC",
+    "Recoleta": "RCL",
+    "San Joaquin": "SJQ",
+    "Temuco": "TMU",
+    "Villarica": "VLL",
+    "Chillan": "CHL",
+    "Yungay": "YGY",
+    "Concepcion": "CCP",
+    "San Pedro de la Paz": "SPP",
+    "Yumbel": "YMB"
+}
+
 
 # =========================
 # SSL (red interna)
@@ -311,13 +328,20 @@ async def recomprimir_jpeg(data: bytes) -> bytes:
 
 
 def generar_s3_key(planta: str, fecha_str: str) -> str:
-    """
-    Genera key S3 particionada por fecha para mejor rendimiento
-    capturas/planta/YYYY/MM/DD/HHMMSS.jpg
-    """
     dt = datetime.strptime(fecha_str, "%Y%m%d_%H%M%S")
-    return f"{S3_PREFIX}/{planta}/{dt.year}/{dt.month:02d}/{dt.day:02d}/{dt.strftime('%H%M%S')}.jpg"
+    denom = DENOMINADORES.get(planta, planta.replace(" ", "_"))
+    filename = f"{denom}_{fecha_str}.jpg"
 
+    return (
+        f"{S3_PREFIX}/"
+        f"{dt.year}/"
+        f"{dt.month:02d}/"
+        f"{dt.day:02d}/"
+        f"{planta}/"
+        f"{filename}"
+    )
+
+        
 
 # =========================
 # Worker de subida S3 (sin recompresión)

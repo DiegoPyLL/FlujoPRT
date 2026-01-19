@@ -1,2 +1,0 @@
-Características de la MV en AWS 
-

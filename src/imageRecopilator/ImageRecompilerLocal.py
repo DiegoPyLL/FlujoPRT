@@ -37,9 +37,6 @@ camaras = {
     "Yumbel": "10.57.17.70"
 }
 
-
-
-
 # Horarios de operación para cada planta
 # Define horas de inicio y fin para días de semana y sábados
 HORARIOS = {
@@ -59,7 +56,22 @@ HORARIOS = {
     "Yumbel": {"semana": ("07:40", "17:20"), "sabado": ("08:10", "13:50")}
 }
 
-
+DENOMINADORES = {
+    "Huechuraba": "HCH",
+    "La Florida": "LFL",
+    "La Pintana": "LPT",
+    "Pudahuel": "PUD",
+    "Quilicura": "QLC",
+    "Recoleta": "RCL",
+    "San Joaquin": "SJQ",
+    "Temuco": "TMU",
+    "Villarica": "VLL",
+    "Chillan": "CHL",
+    "Yungay": "YGY",
+    "Concepcion": "CCP",
+    "San Pedro de la Paz": "SPP",
+    "Yumbel": "YMB"
+}
 
 
 # Configuración SSL para permitir conexiones sin verificar certificados
@@ -124,60 +136,66 @@ def segundos_hasta_apertura(planta):
 
 
 
-# Función asíncrona que captura imágenes de una cámara específica
 async def capturar_camara(session, planta, cam_id):
-    # Crea la carpeta de destino si no existe
-    carpeta = os.path.join(BASE_DIR, planta.replace(" ", "_"))
-    os.makedirs(carpeta, exist_ok=True)
+    denominador = DENOMINADORES.get(planta, planta.replace(" ", "_"))
 
     while True:
-        # Si es domingo, detiene la captura
+        now = datetime.now()
+
+        # Carpeta SIEMPRE basada en el día actual
+        carpeta = os.path.join(
+            BASE_DIR,            
+            f"{now.year}",
+            f"{now.month:02d}",
+            f"{now.day:02d}",
+            planta.replace(" ", "_")
+        )
+        os.makedirs(carpeta, exist_ok=True)
+
         if es_domingo():
-            print(f"{planta} domingo. Captura deshabilitada.")
+            print(f"\033[1m{planta}\033[0m domingo.- Captura deshabilitada.")
             break
 
-        # Si está fuera de horario, espera hasta la próxima apertura
         if not dentro_horario(planta):
             espera = segundos_hasta_apertura(planta)
             if espera is None:
                 break
-            print(f"{planta} fuera de horario. Reintentando en {int(espera/60)} min.")
+            print(f"\033[1m{planta}\033[0m fuera de horario.- Reintentando en {int(espera/60)} min.")
             await asyncio.sleep(espera)
             continue
 
-        # Genera timestamp y nombre de archivo
         pitime = int(time.time())
-        fecha = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        fecha = now.strftime("%Y%m%d_%H%M%S")
         url = f"{BASE_URL}/{cam_id}/imagen.jpg"
 
         exito = False
 
-        # Intenta capturar la imagen hasta 5 veces
         for intento in range(5):
             try:
                 async with session.get(url, params={"pitime": pitime}) as resp:
                     if resp.status == 200:
                         data = await resp.read()
-                        # Guarda la imagen en disco
-                        with open(os.path.join(carpeta, f"{fecha}.jpg"), "wb") as f:
+                        nombre_archivo = f"{denominador}_{fecha}.jpg"
+
+                        with open(os.path.join(carpeta, nombre_archivo), "wb") as f:
                             f.write(data)
 
-                        print(f"{planta} - Imagen guardada: {fecha}.jpg")
+                        print(f"\033[1m{planta}\033[0m - Imagen guardada: {nombre_archivo}")
                         exito = True
                         break
                     else:
-                        print(f"{planta} intento {intento + 1}/5 HTTP {resp.status}")
-            except Exception as e:
-                print(f"{planta} intento {intento + 1}/5 error: {e}")
+                        print(f"\033[1m{planta}\033[0m - Intento {intento + 1}/5 HTTP {resp.status or Exception}")
 
-            # Espera 2.5 segundos entre reintentos
+            except Exception as e:
+                print(f"\033[1m{planta}\033[0m - Intento {intento + 1}/5 error: {e}")
+
             await asyncio.sleep(2.5)
 
         if not exito:
-            print(f"{planta} no respondió. Se reintentará en el próximo ciclo.")
+            print(f"\033[1m{planta}\033[0m no respondió. Se reintentará en el próximo ciclo.")
 
-        # Espera el intervalo configurado antes de la siguiente captura
         await asyncio.sleep(INTERVALO)
+
 
 
 
