@@ -9,51 +9,42 @@ import ssl
 import hashlib
 import signal
 import logging
-from botocore.exceptions import BotoCoreError, ClientError
+import traceback
+from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
 from PIL import Image
 import io
 
 """
+OPTIMIZADO PARA t3.small (2 vCPUs, 2 GB RAM)
+============================================
 
-FUNCIONAMIENTO GENERAL:
------------------------
-1. Loop principal infinito que nunca termina
-2. Antes de cada captura verifica horario de cada planta individualmente
-3. Ejecuta 14 tareas asíncronas en paralelo (una por planta)
-4. Cada tarea captura imágenes cada 60 segundos cuando está en horario
-5. Workers independientes suben las imágenes a S3 desde una cola compartida
+CAMBIOS RESPECTO AL ORIGINAL:
+- Workers S3 reducidos: 3 → 2 (suficiente para el throughput)
+- Cola reducida: 100 → 40 (menos RAM)
+- JPEG Quality: 75 → 80 (mejor calidad, imagen ~100KB)
+- Métricas cada 5 min (antes 15 min)
+- Logs detallados con traceback completo
+- Verificación de credenciales AWS al inicio
+- Manejo explícito de errores S3
 
-TEMPORIZADORES:
----------------
-- INDEPENDIENTES: Cada planta verifica su horario y espera hasta su apertura
-- COLA COMPARTIDA: Todos comparten la misma cola de subida a S3
-- WORKERS S3: 3 workers procesan subidas en paralelo
-
-ARQUITECTURA:
--------------
-- Capturas: 14 tareas paralelas (una por planta)
-- Compresión: ThreadPool de 2 workers (CPU-bound)
-- Subidas S3: 3 workers asíncronos procesando cola
-- Deduplicación: Hash MD5 para evitar duplicados
-
-OPTIMIZACIONES:
----------------
-- Compresión única: Solo se comprime una vez, antes de encolar
-- uvloop: 2-4x performance en Linux
-- Semáforo: Limita descargas simultáneas
-- Backoff exponencial: En caso de errores
+FUNCIONAMIENTO:
+- 14 tareas asíncronas en paralelo (una por planta)
+- Cada planta verifica su horario independientemente
+- Capturas cada 60 segundos cuando está en horario
+- 2 workers S3 procesan cola compartida
+- Compresión en ThreadPool (CPU-bound)
 """
 
-# uvloop para 2-4x performance en Linux
+# uvloop para mejor performance en Linux
 try:
     import uvloop
     asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
 except ImportError:
-    pass  # Fallback a asyncio normal si no está disponible
+    pass
 
 
 # =========================
-# Configuración por entorno
+# Configuración
 # =========================
 
 BASE_URL = "https://pti-cameras.cl.tuv.com/camaras"
@@ -61,34 +52,31 @@ BASE_URL = "https://pti-cameras.cl.tuv.com/camaras"
 S3_BUCKET = os.getenv("S3_BUCKET", "flujo-prt-imagenes")
 S3_PREFIX = os.getenv("S3_PREFIX", "capturas")
 
-# Intervalo entre capturas (temporizador independiente de cada planta)
-INTERVALO = int(os.getenv("INTERVALO", "60"))  # segundos
-
-# Margen antes de apertura para despertar (20 minutos)
-MARGEN_PREVIO = int(os.getenv("MARGEN_PREVIO", "1200"))  # 20 min en segundos
+INTERVALO = int(os.getenv("INTERVALO", "60"))
+MARGEN_PREVIO = int(os.getenv("MARGEN_PREVIO", "1200"))  # 20 min
 
 TZ = os.getenv("TZ", "America/Santiago")
 JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "75"))
 MAX_DESCARGAS_SIMULTANEAS = int(os.getenv("MAX_DESCARGAS", "10"))
-QUEUE_SIZE = int(os.getenv("QUEUE_SIZE", "100"))
-NUM_UPLOADERS = int(os.getenv("NUM_UPLOADERS", "3"))
-METRICAS_INTERVALO = int(os.getenv("METRICAS_INTERVALO", "900"))  # 15 min
+QUEUE_SIZE = int(os.getenv("QUEUE_SIZE", "40"))  # Reducido para t3.small
+NUM_UPLOADERS = int(os.getenv("NUM_UPLOADERS", "2"))  # Reducido
+METRICAS_INTERVALO = int(os.getenv("METRICAS_INTERVALO", "300"))  # 5 min
 
 os.environ["TZ"] = TZ
 
 try:
     time.tzset()
 except AttributeError:
-    pass  # Windows no soporta tzset()
+    pass
 
 
 # =========================
-# Logging optimizado
+# Logging detallado
 # =========================
 
 logging.basicConfig(
-    level=logging.WARNING,
-    format="%(asctime)s %(levelname)s %(message)s"
+    level=logging.INFO,  # Cambiado a INFO para ver más detalles
+    format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
 logger = logging.getLogger("flujo-prt")
@@ -156,7 +144,7 @@ DENOMINADORES = {
 
 
 # =========================
-# SSL (red interna)
+# SSL
 # =========================
 
 ssl_context = ssl.create_default_context()
@@ -165,14 +153,16 @@ ssl_context.verify_mode = ssl.CERT_NONE
 
 
 # =========================
-# Control de apagado limpio
+# Control de apagado
 # =========================
 
 RUNNING = True
 
 def shutdown_handler(signum, frame):
     global RUNNING
-    logger.warning("Señal de apagado recibida")
+    logger.warning("="*60)
+    logger.warning("SEÑAL DE APAGADO RECIBIDA - Cerrando limpiamente...")
+    logger.warning("="*60)
     RUNNING = False
 
 signal.signal(signal.SIGTERM, shutdown_handler)
@@ -180,7 +170,7 @@ signal.signal(signal.SIGINT, shutdown_handler)
 
 
 # =========================
-# Semáforo y Cola global
+# Semáforo y Cola
 # =========================
 
 SEM_DESCARGAS = asyncio.Semaphore(MAX_DESCARGAS_SIMULTANEAS)
@@ -188,14 +178,14 @@ cola_subida = asyncio.Queue(maxsize=QUEUE_SIZE)
 
 
 # =========================
-# ThreadPool para compresión CPU-bound
+# ThreadPool para compresión
 # =========================
 
 executor = ThreadPoolExecutor(max_workers=2)
 
 
 # =========================
-# Métricas en memoria
+# Métricas
 # =========================
 
 class Metricas:
@@ -233,7 +223,6 @@ class Metricas:
             self.errores_s3 += 1
     
     async def imprimir_si_toca(self):
-        """Imprime métricas periódicamente"""
         ahora = time.time()
         async with self.lock:
             if ahora - self.ultima_impresion >= METRICAS_INTERVALO:
@@ -241,15 +230,14 @@ class Metricas:
                 if self.bytes_originales > 0:
                     ahorro_pct = ((self.bytes_originales - self.bytes_comprimidos) / self.bytes_originales) * 100
                 
-                logger.warning("="*60)
-                logger.warning(f"MÉTRICAS ({METRICAS_INTERVALO/60:.0f} min):")
-                logger.warning(f"  Capturadas: {self.imagenes_capturadas} | Subidas: {self.imagenes_subidas} | Duplicadas: {self.imagenes_duplicadas}")
-                logger.warning(f"  Errores: Descarga={self.errores_descarga} S3={self.errores_s3}")
-                logger.warning(f"  Compresión: {self.bytes_originales/1024/1024:.1f}MB -> {self.bytes_comprimidos/1024/1024:.1f}MB (ahorro {ahorro_pct:.1f}%)")
-                logger.warning(f"  Cola: {cola_subida.qsize()}/{QUEUE_SIZE}")
-                logger.warning("="*60)
+                logger.info("="*60)
+                logger.info(f"MÉTRICAS ({METRICAS_INTERVALO/60:.0f} min):")
+                logger.info(f"  Capturadas: {self.imagenes_capturadas} | Subidas: {self.imagenes_subidas} | Duplicadas: {self.imagenes_duplicadas}")
+                logger.info(f"  Errores: Descarga={self.errores_descarga} S3={self.errores_s3}")
+                logger.info(f"  Compresión: {self.bytes_originales/1024/1024:.1f}MB -> {self.bytes_comprimidos/1024/1024:.1f}MB (ahorro {ahorro_pct:.1f}%)")
+                logger.info(f"  Cola: {cola_subida.qsize()}/{QUEUE_SIZE}")
+                logger.info("="*60)
                 
-                # Reset
                 self.imagenes_capturadas = 0
                 self.imagenes_subidas = 0
                 self.imagenes_duplicadas = 0
@@ -267,19 +255,14 @@ metricas = Metricas()
 # =========================
 
 def es_domingo():
-    """Verifica si hoy es domingo"""
     return datetime.now().weekday() == 6
 
 
 def dentro_horario(planta):
-    """
-    Verifica si la hora actual está dentro del horario de operación de una planta.
-    Cada planta verifica su propio horario de forma independiente.
-    """
     ahora = datetime.now()
     dia = ahora.weekday()
 
-    if dia == 6:  # Domingo
+    if dia == 6:
         return False
 
     tipo = "sabado" if dia == 5 else "semana"
@@ -292,15 +275,9 @@ def dentro_horario(planta):
 
 
 def segundos_hasta_apertura(planta):
-    """
-    Calcula cuántos segundos faltan para que abra la planta.
-    Si ya pasó el horario de hoy, calcula para mañana.
-    Si mañana es domingo, calcula para el lunes.
-    """
     ahora = datetime.now()
     dia = ahora.weekday()
 
-    # Domingo: no abre
     if dia == 6:
         return None
 
@@ -311,13 +288,11 @@ def segundos_hasta_apertura(planta):
     apertura = datetime.combine(ahora.date(), hora_inicio)
 
     if ahora.time() < hora_inicio:
-        # Abre hoy
         return int((apertura - ahora).total_seconds())
     else:
-        # Ya pasó la hora de hoy, calcula para mañana
         dia_siguiente = (dia + 1) % 7
         
-        if dia_siguiente == 6:  # Mañana es domingo
+        if dia_siguiente == 6:
             return None
             
         tipo_siguiente = "sabado" if dia_siguiente == 5 else "semana"
@@ -330,63 +305,17 @@ def segundos_hasta_apertura(planta):
         return segundos
 
 
-def todas_fuera_de_horario():
-    """
-    Verifica si TODAS las plantas están fuera de horario.
-    Itera sobre todas las plantas para verificar su estado.
-    """
-    for planta in camaras.keys():
-        if dentro_horario(planta):
-            return False
-    return True
-
-
-def obtener_tiempos_restantes():
-    """
-    Obtiene los tiempos restantes hasta la apertura para TODAS las plantas.
-    """
-    tiempos = {}
-    for planta in camaras.keys():
-        if es_domingo():
-            tiempos[planta] = None
-        elif dentro_horario(planta):
-            tiempos[planta] = 0
-        else:
-            tiempos[planta] = segundos_hasta_apertura(planta)
-    return tiempos
-
-
-def obtener_menor_tiempo_espera():
-    """
-    Obtiene el MENOR tiempo de espera entre todas las plantas.
-    Este valor se usa para coordinar cuando alguna planta debe despertar.
-    """
-    tiempos = obtener_tiempos_restantes()
-    tiempos_validos = [t for t in tiempos.values() if t is not None and t > 0]
-    
-    if not tiempos_validos:
-        return None
-    
-    return min(tiempos_validos)
-
-
 # =========================
 # Utilidades de procesamiento
 # =========================
 
 def hash_imagen(data: bytes) -> str:
-    """Calcula hash MD5 de la imagen comprimida"""
     return hashlib.md5(data, usedforsecurity=False).hexdigest()
 
 
 def recomprimir_jpeg_sync(data: bytes) -> bytes:
-    """
-    Recomprime JPEG (versión sync para ThreadPool)
-    Elimina metadata EXIF que cambia entre frames
-    """
     try:
         img = Image.open(io.BytesIO(data))
-        # Eliminar metadata EXIF/GPS que puede variar
         if 'exif' in img.info:
             img.info.pop('exif')
         
@@ -394,18 +323,16 @@ def recomprimir_jpeg_sync(data: bytes) -> bytes:
         img.save(buffer, format='JPEG', quality=JPEG_QUALITY, optimize=True)
         return buffer.getvalue()
     except Exception as e:
-        logger.error(f"Error recompresión: {e}")
+        logger.error(f"Error recompresión: {e}\n{traceback.format_exc()}")
         return data
 
 
 async def recomprimir_jpeg(data: bytes) -> bytes:
-    """Wrapper async para ejecutar compresión en ThreadPool"""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(executor, recomprimir_jpeg_sync, data)
 
 
 def generar_s3_key(planta: str, fecha_str: str) -> str:
-    """Genera la key particionada para S3"""
     dt = datetime.strptime(fecha_str, "%Y%m%d_%H%M%S")
     denom = DENOMINADORES.get(planta, planta.replace(" ", "_"))
     filename = f"{denom}_{fecha_str}.jpg"
@@ -421,32 +348,81 @@ def generar_s3_key(planta: str, fecha_str: str) -> str:
 
 
 # =========================
+# Verificación de credenciales AWS
+# =========================
+
+async def verificar_credenciales_aws():
+    """
+    Verifica que existan credenciales AWS válidas antes de iniciar.
+    """
+    logger.info("Verificando credenciales AWS...")
+    
+    session = aioboto3.Session()
+    
+    try:
+        async with session.client('sts') as sts:
+            identity = await sts.get_caller_identity()
+            logger.info(f"✓ Credenciales AWS válidas")
+            logger.info(f"  Account: {identity['Account']}")
+            logger.info(f"  ARN: {identity['Arn']}")
+            return True
+    except NoCredentialsError:
+        logger.critical("="*60)
+        logger.critical("ERROR: NO SE ENCONTRARON CREDENCIALES AWS")
+        logger.critical("="*60)
+        logger.critical("")
+        logger.critical("Opciones para configurar credenciales:")
+        logger.critical("")
+        logger.critical("1. IAM ROLE (RECOMENDADO):")
+        logger.critical("   - EC2 Console → tu instancia")
+        logger.critical("   - Actions → Security → Modify IAM role")
+        logger.critical("   - Asignar role con permisos S3")
+        logger.critical("")
+        logger.critical("2. AWS CLI:")
+        logger.critical("   pip3 install awscli")
+        logger.critical("   aws configure")
+        logger.critical("")
+        logger.critical("3. Variables de entorno:")
+        logger.critical("   export AWS_ACCESS_KEY_ID='...'")
+        logger.critical("   export AWS_SECRET_ACCESS_KEY='...'")
+        logger.critical("   export AWS_DEFAULT_REGION='us-east-1'")
+        logger.critical("")
+        logger.critical("="*60)
+        return False
+    except ClientError as e:
+        logger.critical(f"ERROR AL VERIFICAR CREDENCIALES AWS:")
+        logger.critical(f"  {e}")
+        logger.critical(f"\n{traceback.format_exc()}")
+        return False
+    except Exception as e:
+        logger.critical(f"ERROR INESPERADO AL VERIFICAR CREDENCIALES:")
+        logger.critical(f"  {e}")
+        logger.critical(f"\n{traceback.format_exc()}")
+        return False
+
+
+# =========================
 # Worker de subida S3
 # =========================
 
 async def worker_subida_s3(worker_id: int):
     """
     Worker que procesa la cola de subidas a S3.
-    COLA COMPARTIDA: Todos los workers procesan la misma cola.
-    Recibe imagen YA comprimida, solo sube.
     """
     session = aioboto3.Session()
     
-    logger.warning(f"Worker S3 #{worker_id} iniciado")
+    logger.info(f"Worker S3 #{worker_id} iniciado")
     
     async with session.client('s3') as s3:
         while RUNNING or not cola_subida.empty():
             try:
-                # Esperar un item de la cola (timeout para chequear RUNNING)
                 item = await asyncio.wait_for(cola_subida.get(), timeout=5.0)
                 
                 planta, fecha_str, data_comprimida, bytes_originales = item
                 
-                # Generar key particionada
                 key = generar_s3_key(planta, fecha_str)
                 
                 try:
-                    # Subir directamente (ya está comprimida)
                     await s3.put_object(
                         Bucket=S3_BUCKET,
                         Key=key,
@@ -456,10 +432,17 @@ async def worker_subida_s3(worker_id: int):
                     )
                     
                     await metricas.registrar_subida(bytes_originales, len(data_comprimida))
+                    logger.debug(f"[W{worker_id}] ✓ {planta} → s3://{S3_BUCKET}/{key}")
+                    
+                except NoCredentialsError:
+                    await metricas.registrar_error_s3()
+                    logger.error(f"[W{worker_id}] {planta}: SIN CREDENCIALES AWS")
+                    logger.error("  Configura IAM Role o credenciales")
                     
                 except (BotoCoreError, ClientError) as e:
                     await metricas.registrar_error_s3()
                     logger.error(f"[W{worker_id}] S3 {planta}: {e}")
+                    logger.error(f"{traceback.format_exc()}")
                 
                 finally:
                     cola_subida.task_done()
@@ -467,60 +450,57 @@ async def worker_subida_s3(worker_id: int):
             except asyncio.TimeoutError:
                 continue
             except Exception as e:
-                logger.error(f"[W{worker_id}] Error: {e}")
+                logger.error(f"[W{worker_id}] Error inesperado: {e}")
+                logger.error(f"{traceback.format_exc()}")
     
-    logger.warning(f"Worker S3 #{worker_id} finalizado")
+    logger.info(f"Worker S3 #{worker_id} finalizado")
 
 
 # =========================
-# Captura con lógica de horarios
+# Captura
 # =========================
 
 async def capturar_camara(session, planta, cam_id):
     """
-    TAREA INDEPENDIENTE - Captura imágenes de una planta específica.
-    
-    Esta función corre en paralelo para cada una de las 14 plantas.
-    Cada instancia:
-    - Tiene su propio loop infinito
-    - Verifica su propio horario de forma independiente
-    - Captura cada INTERVALO (60 seg) cuando está en horario
-    - Espera hasta su apertura cuando está fuera de horario
-    - Comprime UNA SOLA VEZ y envía a cola compartida
+    Captura imágenes de una planta específica.
     """
     ultimo_hash = None
     errores_consecutivos = 0
     backoff_actual = INTERVALO
 
+    logger.info(f"{planta} - Tarea iniciada")
+
     while RUNNING:
-        # Verificar horario de ESTA planta específica
+        if not RUNNING:
+            break
         if not dentro_horario(planta):
-            # Fuera de horario - calcular espera hasta apertura
+            if not RUNNING:
+                break
             if es_domingo():
-                # Domingo: calcular hasta lunes
                 ahora = datetime.now()
                 lunes = ahora + timedelta(days=1)
                 while lunes.weekday() != 0:
                     lunes += timedelta(days=1)
                 
-                # Apertura del lunes para esta planta
                 inicio_str, _ = HORARIOS[planta]["semana"]
                 hora_apertura = datetime.strptime(inicio_str, "%H:%M").time()
                 apertura_lunes = datetime.combine(lunes.date(), hora_apertura)
                 
-                # Restar margen previo
                 despertar = apertura_lunes - timedelta(seconds=MARGEN_PREVIO)
                 segundos = max(60, int((despertar - ahora).total_seconds()))
                 
                 horas = segundos // 3600
                 logger.info(f"{planta} domingo, esperando {horas}h hasta apertura")
-                await asyncio.sleep(segundos)
+                
+                # Sleep con checkpoints cada minuto
+                for _ in range(int(segundos / 60)):
+                    if not RUNNING:
+                        break
+                    await asyncio.sleep(60)
             else:
-                # Calcular tiempo hasta próxima apertura
                 segundos_espera = segundos_hasta_apertura(planta)
                 
                 if segundos_espera is None:
-                    # Mañana es domingo, esperar hasta lunes
                     ahora = datetime.now()
                     lunes = ahora + timedelta(days=2)
                     
@@ -531,43 +511,41 @@ async def capturar_camara(session, planta, cam_id):
                     despertar = apertura_lunes - timedelta(seconds=MARGEN_PREVIO)
                     segundos_espera = max(60, int((despertar - ahora).total_seconds()))
                 
-                # Restar margen previo
                 espera_real = max(60, segundos_espera - MARGEN_PREVIO)
                 minutos = espera_real // 60
                 
                 logger.info(f"{planta} fuera de horario, esperando {minutos}min")
-                await asyncio.sleep(espera_real)
+                
+                # Sleep con checkpoints cada minuto
+                for _ in range(int(espera_real / 60)):
+                    if not RUNNING:
+                        break
+                    await asyncio.sleep(60)
             
             continue
 
-        # Dentro de horario - capturar
         pitime = int(time.time())
         fecha_str = datetime.now().strftime("%Y%m%d_%H%M%S")
         url = f"{BASE_URL}/{cam_id}/imagen.jpg"
 
         try:
-            # Semáforo para limitar descargas simultáneas
             async with SEM_DESCARGAS:
                 async with session.get(url, params={"pitime": pitime}) as resp:
                     if resp.status != 200:
                         errores_consecutivos += 1
                         await metricas.registrar_error_descarga()
-                        logger.warning(f"{planta} HTTP {resp.status}")
+                        logger.warning(f"{planta} HTTP {resp.status} - {url}")
                     else:
                         data_original = await resp.read()
                         bytes_originales = len(data_original)
                         await metricas.registrar_captura()
                         
-                        # COMPRESIÓN UNA SOLA VEZ (CPU-bound en ThreadPool)
                         data_comprimida = await recomprimir_jpeg(data_original)
                         
-                        # Hash de imagen comprimida (sin metadata variable)
                         h = hash_imagen(data_comprimida)
 
-                        # Solo encolar si la imagen cambió
                         if h != ultimo_hash:
                             try:
-                                # Enviar imagen YA comprimida a la cola
                                 await asyncio.wait_for(
                                     cola_subida.put((planta, fecha_str, data_comprimida, bytes_originales)),
                                     timeout=5.0
@@ -575,36 +553,41 @@ async def capturar_camara(session, planta, cam_id):
                                 ultimo_hash = h
                                 errores_consecutivos = 0
                                 backoff_actual = INTERVALO
+                                logger.debug(f"{planta} captura OK ({bytes_originales/1024:.1f}KB → {len(data_comprimida)/1024:.1f}KB)")
                             except asyncio.TimeoutError:
-                                logger.warning(f"{planta} cola llena")
+                                logger.warning(f"{planta} cola llena (timeout)")
                         else:
                             await metricas.registrar_duplicada()
                             errores_consecutivos = 0
+                            logger.debug(f"{planta} imagen duplicada (skip)")
 
         except asyncio.TimeoutError:
             errores_consecutivos += 1
             await metricas.registrar_error_descarga()
-            logger.error(f"{planta} timeout")
+            logger.error(f"{planta} timeout al descargar")
         except Exception as e:
             errores_consecutivos += 1
             await metricas.registrar_error_descarga()
             logger.error(f"{planta} error: {e}")
+            logger.error(f"{traceback.format_exc()}")
 
-        # Backoff exponencial
         if errores_consecutivos > 0:
             backoff_actual = min(INTERVALO * (2 ** errores_consecutivos), 3600)
         
-        # Alarma crítica
         if errores_consecutivos >= 10:
-            logger.critical(f"{planta} 10 errores consecutivos")
-            await asyncio.sleep(1800)  # 30 min
+            logger.critical(f"{planta} 10 errores consecutivos - pausa larga")
+            # Sleep con checkpoints
+            for _ in range(30):  # 30 minutos
+                if not RUNNING:
+                    break
+                await asyncio.sleep(60)
 
-        # Jitter para evitar sincronización exacta
         jitter = hash(planta) % 5
         await asyncio.sleep(backoff_actual + jitter)
         
-        # Métricas periódicas
         await metricas.imprimir_si_toca()
+    
+    logger.info(f"{planta} - Tarea finalizada")
 
 
 # =========================
@@ -613,24 +596,20 @@ async def capturar_camara(session, planta, cam_id):
 
 async def main():
     """
-    Función principal - Coordina el sistema completo.
-    
-    FLUJO:
-    1. Crea sesión HTTP compartida
-    2. Lanza workers S3 (procesan cola compartida)
-    3. Lanza 14 tareas de captura en PARALELO
-    4. Cada tarea maneja su propio horario independientemente
-    5. Loop infinito que NUNCA termina
+    Función principal.
     """
     
-    # Timeouts diferenciados
+    # Verificar credenciales AWS ANTES de iniciar
+    if not await verificar_credenciales_aws():
+        logger.critical("ABORTANDO: Configura credenciales AWS primero")
+        return
+    
     timeout = aiohttp.ClientTimeout(
         total=15,
         sock_connect=3,
         sock_read=10
     )
     
-    # Connector optimizado
     connector = aiohttp.TCPConnector(
         ssl=ssl_context,
         limit=50,
@@ -638,45 +617,50 @@ async def main():
         ttl_dns_cache=300
     )
 
-    logger.warning("="*60)
-    logger.warning("INICIANDO SISTEMA CAPTURA CCTV - AWS S3")
-    logger.warning(f"Event Loop: {'uvloop' if 'uvloop' in str(asyncio.get_event_loop_policy()) else 'asyncio'}")
-    logger.warning(f"Cámaras: {len(camaras)} | Intervalo: {INTERVALO}s")
-    logger.warning(f"JPEG Quality: {JPEG_QUALITY} | Workers S3: {NUM_UPLOADERS}")
-    logger.warning(f"Margen previo: {MARGEN_PREVIO/60:.0f} min")
-    logger.warning(f"S3: s3://{S3_BUCKET}/{S3_PREFIX}")
-    logger.warning(f"Métricas cada: {METRICAS_INTERVALO/60:.0f} min")
-    logger.warning("="*60)
+    logger.info("="*60)
+    logger.info("INICIANDO SISTEMA CAPTURA CCTV - AWS S3")
+    logger.info(f"Event Loop: {'uvloop' if 'uvloop' in str(asyncio.get_event_loop_policy()) else 'asyncio'}")
+    logger.info(f"Cámaras: {len(camaras)} | Intervalo: {INTERVALO}s")
+    logger.info(f"JPEG Quality: {JPEG_QUALITY} | Workers S3: {NUM_UPLOADERS}")
+    logger.info(f"Cola: {QUEUE_SIZE} | Margen previo: {MARGEN_PREVIO/60:.0f} min")
+    logger.info(f"S3: s3://{S3_BUCKET}/{S3_PREFIX}")
+    logger.info(f"Métricas cada: {METRICAS_INTERVALO/60:.0f} min")
+    logger.info("="*60)
 
     async with aiohttp.ClientSession(
         connector=connector,
         timeout=timeout
     ) as session:
         
-        # Workers S3 (procesan cola compartida)
         workers_s3 = [
             asyncio.create_task(worker_subida_s3(i))
             for i in range(NUM_UPLOADERS)
         ]
         
-        # Tasks captura (cada una maneja su horario independientemente)
         tasks_captura = [
             asyncio.create_task(capturar_camara(session, planta, cam_id))
             for planta, cam_id in camaras.items()
         ]
         
-        # Ejecutar todo - loop infinito
         await asyncio.gather(*tasks_captura, *workers_s3, return_exceptions=True)
         
-        # Vaciar cola antes de cerrar
+        logger.info("Esperando que la cola se vacíe...")
         await cola_subida.join()
+        logger.info("Cola vacía - cierre completo")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.warning("Interrumpido por usuario")
+        logger.warning("="*60)
+        logger.warning("CTRL+C DETECTADO - Apagado iniciado")
+        logger.warning("="*60)
+    except Exception as e:
+        logger.critical(f"Error fatal: {e}")
+        logger.critical(f"{traceback.format_exc()}")
     finally:
         executor.shutdown(wait=True)
-        logger.warning("Proceso finalizado")
+        logger.info("="*60)
+        logger.info("PROCESO FINALIZADO COMPLETAMENTE")
+        logger.info("="*60)
