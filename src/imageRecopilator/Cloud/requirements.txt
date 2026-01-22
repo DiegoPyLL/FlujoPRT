@@ -1,6 +1,6 @@
 aiohttp==3.9.2
 aioboto3==12.3.0
-aiobotocore==2.25.1
+aiobotocore==2.11.2
 boto3==1.40.61
 botocore==1.40.61
 s3transfer==0.14.0
