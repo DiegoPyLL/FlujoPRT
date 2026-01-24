@@ -1,0 +1,57 @@
+
+1. EJECUCIÓN PERMANENTE (TMUX)
+----------------------------------
+# Crear sesión nueva:
+tmux new -s cctv
+
+# Comando de ejecución:
+python3 src/imageRecopilator/Cloud/ImageRecompilerCloud.py
+
+# Salir de la sesión (sin cerrar el programa):
+Presionar Ctrl+B y luego la tecla D
+
+# Volver a entrar para ver cómo va todo:
+
+tmux attach -t cctv
+
+
+
+
+
+
+
+2. DESCARGAR IMÁGENES DESDE AWS S3
+----------------------------------
+# Bajar todas las capturas a una carpeta local:
+aws s3 sync s3://flujo-prt-imagenes/capturas/ ./descargas_fotos/
+
+# Bajar solo las fotos de HOY (Ejemplo 22-Ene-2026):
+aws s3 sync s3://flujo-prt-imagenes/capturas/2026/01/22/ ./fotos_hoy/
+
+# Bajar solo una planta específica (Ejemplo: Temuco):
+aws s3 sync s3://flujo-prt-imagenes/capturas/2026/01/22/Temuco/ ./fotos_temuco/
+
+
+
+
+
+
+
+3. COMANDOS DE MONITOREO RÁPIDO
+----------------------------------
+# Ver cuánto espacio están ocupando las fotos en S3:
+aws s3 ls s3://flujo-prt-imagenes/capturas/ --recursive --human-readable --summarize
+
+# Listar las últimas carpetas de plantas creadas:
+aws s3 ls s3://flujo-prt-imagenes/capturas/2026/01/22/
+
+
+
+
+
+
+
+4. REINSTALACIÓN DE LIBRERÍAS (SI HAY ERRORES)
+----------------------------------
+pip uninstall -y aiohttp aioboto3 aiobotocore boto3 botocore s3transfer
+pip install --user -r src/imageRecopilator/Cloud/requirements.txt

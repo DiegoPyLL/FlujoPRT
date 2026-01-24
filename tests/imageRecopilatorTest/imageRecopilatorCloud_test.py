@@ -11,7 +11,7 @@ project_root = os.path.abspath(os.path.join(current_dir, "../../"))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from imageRecopilator import imageRecompilerCloud as cloud
+from imageRecopilator.Local import imageRecompilerCloud as cloud
 
 
 @pytest.mark.imageRecopilator
@@ -32,7 +32,7 @@ class TestCloudRecopilador:
 
     @pytest.mark.asyncio
     async def test_metricas_ahorro(self):
-        from imageRecopilator.ImageRecompilerCloud import Metricas
+        from imageRecopilator.Cloud.ImageRecompilerCloud import Metricas
 
         m = Metricas()
         await m.registrar_subida(1000, 400)
