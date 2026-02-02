@@ -1,12 +1,11 @@
 # FlujoPRT
-
-    Sistema automatizado para capturar imágenes desde cámaras públicas de plantas de revisión técnica, generar timelapses diarios y aplicar análisis visual con reconocimiento vehicular.
+  Sistema automatizado para capturar imágenes desde cámaras públicas de plantas de revisión técnica, generar timelapses diarios y aplicar análisis visual con reconocimiento vehicular.
 
 **Tópicos:** `computer-vision` `image-capture` `timelapse` `vehicle-recognition` `aws` `cloud-processing` `automation` `python` `opencv`
 
 ## Características
 
-    Captura paralela de múltiples plantas con`asyncio` y `aiohttp`. Compresión JPEG optimizada con calidad configurable y eliminación de metadata. Detección de duplicados por hash MD5 antes de subir a S3. Almacenamiento particionado por fecha en AWS S3. Respeta horarios de operación (lunes-sábado, omite domingos). Backoff exponencial en errores y métricas en memoria. Compatible con `uvloop` en Linux. Control de concurrencia con semáforos y colas.
+  Captura paralela de múltiples plantas con`asyncio` y `aiohttp`. Compresión JPEG optimizada con calidad configurable y eliminación de metadata. Detección de duplicados por hash MD5 antes de subir a S3. Almacenamiento particionado por fecha en AWS S3. Respeta horarios de operación (lunes-sábado, omite domingos). Backoff exponencial en errores y métricas en memoria. Compatible con `uvloop` en Linux. Control de concurrencia con semáforos y colas.
 
 ## Instalación
 
