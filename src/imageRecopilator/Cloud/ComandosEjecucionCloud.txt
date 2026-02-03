@@ -1,88 +1,107 @@
+
 ======================================================================
        GUÍA DE COMANDOS - SISTEMA CAPTURA Y PROCESAMIENTO FlujoPRT_CCTV
 ======================================================================
 
-1. EJECUCIÓN PERMANENTE (TMUX)
+1. CONFIGURACIÓN
 ---------------------------------------------------------
-# Crear sesión nueva:
-tmux new -s FlujoPRT_CCTV
+desde el usuario root crear un grupo de seguridad, asignarle un usuario con permisos full access de ec2, s3 y
+administrator
 
-# Comando de ejecución:
-python3 src/imageRecopilator/Cloud/ImageRecompilerCloud.py
+asegurarse de crear el ec2 y s3 en la misma region
 
-# Salir de la sesión (el programa sigue corriendo):
-Presionar Ctrl+B y luego la tecla D
+# Crear EC2 con t2.small 
 
-# Volver a entrar a la sesión:
-tmux attach -t FlujoPRT_CCTV
+# Crear bucket llamado flujo-prt-imagenes
+       # Revisar la creación desde el ec2 usando el comando aws s3 ls
 
-# Ver sesiones activas:
-tmux ls
-
-# Matar sesión (Reiniciar proceso):
-tmux kill-session -t FlujoPRT_CCTV
+ 
 
 
-2. DESCARGAR / SINCRONIZAR DESDE AWS S3
+
+2. INSTALACIÓN
 ---------------------------------------------------------
-# Sincronizar TODAS las capturas a carpeta local:
-aws s3 sync s3://flujo-prt-imagenes/capturas/ ./descargas_fotos/
-
-# Bajar fotos de un día específico (Ejemplo: 22-Ene-2026):
-aws s3 sync s3://flujo-prt-imagenes/capturas/2026/01/22/ ./fotos_hoy/
-
-# Bajar fotos de una planta específica:
-aws s3 sync s3://flujo-prt-imagenes/capturas/2026/01/22/Temuco/ ./fotos_temuco/
-
-# Descargar los Timelapses generados:
-aws s3 sync s3://flujo-prt-imagenes/timelapses/ ./videos_finales/
-
-
-3. MONITOREO DE ALMACENAMIENTO Y RED
----------------------------------------------------------
-# Ver peso total en S3 (Resumen):
-aws s3 ls s3://flujo-prt-imagenes/capturas/ --recursive --human-readable --summarize
-
-# Listar carpetas de hoy para verificar subida:
-aws s3 ls s3://flujo-prt-imagenes/capturas/2026/01/22/
-
-# Probar conexión manual a una cámara:
-curl -I https://pti-cameras.cl.tuv.com/camaras/10.57.32.222_Cam01/imagen.jpg
-
-# Ver espacio en disco local del servidor:
-df -h
-
-
-4. LOGS Y DIAGNÓSTICO
----------------------------------------------------------
-# Ver log en tiempo real (ajustar ruta según .env):
-tail -f /data/flujo_prt/logs/FlujoPRT_CCTV.log
-
-# Buscar errores críticos en el historial:
-grep "CRITICAL" /data/flujo_prt/logs/FlujoPRT_CCTV.log | tail -n 20
-
-# Verificar si FFmpeg está instalado (necesario para el domingo):
-ffmpeg -version
-
-
-5. MANTENIMIENTO DEL ENTORNO (PYTHON)
----------------------------------------------------------
-# Reinstalar dependencias desde cero:
-pip uninstall -y aiohttp aioboto3 aiobotocore boto3 botocore s3transfer
-pip install --user -r src/imageRecopilator/Cloud/requirements.txt
-
-# Limpiar archivos temporales de Python (Caché):
-find . -type d -name "__pycache__" -exec rm -rf {} +
-
-
-6. CONFIGURACIÓN DE AWS
----------------------------------------------------------
-# Si hay errores de permisos o credenciales expiradas:
-aws configure
-# (Ingresar Access Key, Secret Key y Región: us-east-1 o la configurada)
-
-======================================================================
+* sudo apt upgrade
+* sudo apt update 
+* sudo apt install python3-pip awscli
+* git clone https://github.com/DiegoPyLL/FlujoPRT
+* cd FlujoPRT
+* pip install --user -r src/imageRecopilator/Cloud/requirements.txt
 
 
 
-300mb por 1000 fotos
+3. USO
+       ---------------------------------------------------------
+       1. EJECUCIÓN PERMANENTE (TMUX)
+       ---------------------------------------------------------
+       *   Crear sesión nueva:
+              tmux new -s FlujoPRT_CCTV
+
+       *   Comando de ejecución:
+              python3 src/imageRecopilator/Cloud/ImageRecompilerCloud.py
+
+       *   Volver a entrar a la sesión:
+              tmux attach -t FlujoPRT_CCTV
+
+       *   Ver sesiones activas:
+              tmux ls
+
+       *   Matar sesión (Reiniciar proceso):
+              tmux kill-session -t FlujoPRT_CCTV
+
+
+
+
+       2. DESCARGAR / SINCRONIZAR DESDE AWS S3
+       ---------------------------------------------------------
+       *   Sincronizar TODAS las capturas a carpeta local:
+              aws s3 sync s3://flujoprt-bucket/capturas/ ./descargas_fotos/
+
+       *   Bajar fotos de un día específico (Ejemplo: 22-Ene-2026):
+              aws s3 sync s3://flujoprt-bucket/capturas/2026/01/22/ ./fotos_hoy/
+
+       *   Bajar fotos de una planta específica:
+              aws s3 sync s3://flujoprt-bucket/capturas/2026/01/22/Temuco/ ./fotos_temuco/
+
+       *   Descargar los Timelapses generados:
+              aws s3 sync s3://flujoprt-bucket/timelapses/ ./videos_finales/
+
+
+
+
+
+       3. MONITOREO DE ALMACENAMIENTO Y RED
+       ---------------------------------------------------------
+       *   Ver peso total en S3 (Resumen):
+              aws s3 ls s3://flujoprt-bucket/capturas/ --recursive --human-readable --summarize
+
+       *   Listar carpetas de hoy para verificar subida:
+              aws s3 ls s3://flujoprt-bucket/capturas/2026/01/22/
+
+       *   Probar conexión manual a una cámara:
+              curl -I https://pti-cameras.cl.tuv.com/camaras/10.57.32.222_Cam01/imagen.jpg
+
+       *   Ver espacio en disco local del servidor:
+              df -h
+
+
+
+       4. LOGS Y DIAGNÓSTICO
+       ---------------------------------------------------------
+       *   Ver log en tiempo real (ajustar ruta según .env):
+              tail -f /data/flujo_prt/logs/FlujoPRT_CCTV.log
+
+       *   Buscar errores críticos en el historial:
+              grep "CRITICAL" /data/flujo_prt/logs/FlujoPRT_CCTV.log | tail -n 20
+
+       *   Verificar si FFmpeg está instalado (necesario para el domingo):
+              ffmpeg -version
+
+       *   Limpiar archivos temporales de Python (Cache):
+              find . -type d -name "__pycache__" -exec rm -rf {} +
+
+
+
+
+
+
