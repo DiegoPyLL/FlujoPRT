@@ -16,6 +16,7 @@ import tempfile
 import io
 from collections import defaultdict
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
+from botocore.config import Config
 from PIL import Image
 
 """
@@ -744,7 +745,7 @@ class SundayWorker:
             frames_validos = []
             keys_descargadas = []
             
-            config = aioboto3.session.Config(
+            config = Config(
                 max_pool_connections=50,
                 retries={'max_attempts': 3, 'mode': 'adaptive'}
             )
