@@ -748,21 +748,22 @@ class SundayWorker:
             config = Config(
                 max_pool_connections=10,
                 retries={'max_attempts': 5, 'mode': 'adaptive'},
-                read_timeout=120,
+                read_timeout=300,  # 5 minutos para lectura
                 connect_timeout=60
             )
             
             async with self.session.client('s3', config=config) as s3:
-                sem = asyncio.Semaphore(3)  # Reducido a 3 para evitar saturar conexiones
+                sem = asyncio.Semaphore(2)  # Reducido a 2 para mayor estabilidad
                 
                 async def descargar_y_validar(img_info):
                     async with sem:
-                        max_retries = 3
+                        max_retries = 5  # Aumentado de 3 a 5
                         last_error = None
                         for attempt in range(max_retries):
                             try:
                                 obj = await s3.get_object(Bucket=S3_BUCKET, Key=img_info['key'])
                                 data = await obj['Body'].read()
+                                await asyncio.sleep(0.1)  # Pequeño delay entre descargas exitosas
                                 return data, img_info['key']
                             except Exception as e:
                                 last_error = e
@@ -770,7 +771,7 @@ class SundayWorker:
                                     logger.error(f"  [ERROR] Fallo descarga {img_info['key']} después de {max_retries} intentos: {e}")
                                     raise
                                 logger.warning(f"  [RETRY] Intento {attempt + 1}/{max_retries} falló para {img_info['key']}: {e}")
-                                await asyncio.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
+                                await asyncio.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s, 8s, 16s
                         
                         # Fallback: si llegamos aquí sin retornar ni lanzar excepción
                         raise Exception(f"Descarga falló para {img_info['key']}: {last_error}")
@@ -921,40 +922,21 @@ async def main():
     )
 
     logger.info("="*60)
-    logger.info("INICIANDO SISTEMA CAPTURA + PROCESAMIENTO CCTV")
+    logger.info("INICIANDO SISTEMA CAPTURA CCTV (SOLO CAPTURA)")
     logger.info(f"Event Loop: {'uvloop' if 'uvloop' in str(asyncio.get_event_loop_policy()) else 'asyncio'}")
     logger.info(f"Cámaras: {len(camaras)} | Intervalo: {INTERVALO}s")
     logger.info(f"JPEG Quality: {JPEG_QUALITY} | Workers S3: {NUM_UPLOADERS}")
     logger.info(f"S3: s3://{S3_BUCKET}/{S3_PREFIX}")
     logger.info("="*60)
 
-    sunday_worker = SundayWorker()
-
     async with aiohttp.ClientSession(
         connector=connector,
         timeout=timeout
     ) as session:
         
-        # BUCLE PRINCIPAL INFINITO (IMPERATIVO: NO BREAK)
+        # BUCLE PRINCIPAL INFINITO - SOLO CAPTURA
         while RUNNING:
-            # 1. ¿Es Domingo? Ejecutar procesamiento y esperar
-            if es_domingo():
-                logger.info("DOMINGO DETECTADO - Iniciando procesamiento de semana anterior...")
-                await sunday_worker.ejecutar()
-                
-                # Suspender hasta el lunes para evitar re-entradas rápidas
-                await esperar_hasta_apertura()
-                # Al volver del await, el bucle reinicia y verificará de nuevo condiciones
-                continue
-            
-            # 2. Lunes-Sábado: Configuración de tareas de captura
-            await esperar_hasta_apertura()
-            
-            if not RUNNING:
-                # Si durante la espera se recibió señal de apagado, el while principal lo detectará
-                continue
-            
-            logger.info("Iniciando ciclo semanal de capturas...")
+            logger.info("Iniciando ciclo de capturas continuo...")
             
             # Lanzar workers S3
             workers_s3 = [
@@ -968,29 +950,24 @@ async def main():
                 for planta, cam_id in camaras.items()
             ]
             
-            # 3. MONITOREO DEL CICLO SEMANAL
-            # Esperar hasta que termine el día (sábado a las 23:59 o se detecte domingo)
-            # O se reciba señal de apagado (RUNNING = False)
-            while RUNNING and not es_domingo():
+            # MONITOREO CONTINUO
+            while RUNNING:
                 await asyncio.sleep(60)
             
-            # 4. LIMPIEZA DE TRANSICIÓN (Llegó Domingo o Apagado)
-            logger.info("Transición detectada (Domingo o Shutdown) - Deteniendo tareas...")
+            # LIMPIEZA AL APAGAR
+            logger.info("Shutdown detectado - Deteniendo tareas...")
 
-            # Cancelar tareas de captura primero (para dejar de meter items a la cola)
+            # Cancelar tareas de captura primero
             for task in tasks_captura:
                 task.cancel()
             
             # Esperar confirmación de cancelación de capturas
             await asyncio.gather(*tasks_captura, return_exceptions=True)
             
-            # Opcional: Intentar vaciar la cola antes de matar a los workers S3
+            # Drenar cola antes de cancelar workers S3
             if not cola_subida.empty():
                 logger.info("Drenando cola de subida antes de cancelar workers...")
-                # Dar un tiempo razonable para vaciar, si no, cancelar
                 try:
-                    # Esperamos hasta que la cola esté vacía (task_done llamado por workers)
-                    # Ojo: si los workers mueren antes, esto se cuelga, pero aquí siguen vivos.
                     await asyncio.wait_for(cola_subida.join(), timeout=300)
                 except asyncio.TimeoutError:
                     logger.warning("Timeout drenando cola - procediendo a cancelación forzada")
@@ -1001,10 +978,10 @@ async def main():
             
             await asyncio.gather(*workers_s3, return_exceptions=True)
             
-            logger.info("Ciclo de captura detenido. Reiniciando bucle principal...")
-            # Aquí termina el while, vuelve al inicio. Si es Domingo, entra al if es_domingo().
+            logger.info("Ciclo de captura detenido.")
+            break  # Salir del bucle principal en shutdown
         
-        # Fuera del while RUNNING (Solo ocurre en apagado total)
+        # Cleanup final
         logger.info("Esperando que la cola se vacíe (cleanup final)...")
         if not cola_subida.empty():
              try:
