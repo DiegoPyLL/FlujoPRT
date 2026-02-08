@@ -1,8 +1,14 @@
 # POLÍTICA IAM PARA DESCARGAR BUCKET S3
 
-## Opción 1: Política IAM para Usuario/Rol (Recomendado)
+## ✅ CONFIGURACIÓN COMPLETADA
 
-Crea esta política en AWS IAM Console:
+**Usuario IAM creado:** `s3-downloader`
+
+---
+
+## 📋 Política IAM Necesaria
+
+Esta es la política que debes asignar al usuario `s3-downloader`:
 
 ```json
 {
@@ -15,7 +21,7 @@ Crea esta política en AWS IAM Console:
                 "s3:ListBucket",
                 "s3:GetBucketLocation"
             ],
-            "Resource": "arn:aws:s3:::flujoprtimagenes"
+            "Resource": "arn:aws:s3:::flujo-prt-imagenes"
         },
         {
             "Sid": "DownloadObjects",
@@ -24,130 +30,180 @@ Crea esta política en AWS IAM Console:
                 "s3:GetObject",
                 "s3:GetObjectVersion"
             ],
-            "Resource": "arn:aws:s3:::flujoprtimagenes/*"
+            "Resource": "arn:aws:s3:::flujo-prt-imagenes/*"
         }
     ]
 }
 ```
 
-**Pasos para aplicar:**
+---
 
-1. Ve a AWS Console → IAM
-2. Crea una nueva política:
-   - Policies → Create policy
+## 🔧 Cómo Asignar la Política
+
+### Método 1: Crear y Asignar Política (Recomendado)
+
+1. **Crear la política:**
+
+   - AWS Console → IAM → Policies
+   - Click **"Create policy"**
+   - Tab **"JSON"**
    - Pega el JSON de arriba
+   - Click **"Next"**
    - Nombre: `S3-FlujoPRT-ReadOnly`
+   - Click **"Create policy"**
+2. **Asignar al usuario:**
 
-3. Asigna la política a tu usuario/rol:
-   - Users → Tu usuario → Add permissions → Attach policies
-   - Busca y selecciona `S3-FlujoPRT-ReadOnly`
+   - IAM → Users → `s3-downloader`
+   - Tab **"Permissions"**
+   - Click **"Add permissions"** → **"Attach policies directly"**
+   - Busca `S3-FlujoPRT-ReadOnly`
+   - Selecciona y click **"Add permissions"**
 
-## Opción 2: AWS CLI para configurar credenciales locales
+### Método 2: Inline Policy (Rápido)
 
-Si descargarás desde tu máquina local:
+1. IAM → Users → `s3-downloader`
+2. Tab **"Permissions"**
+3. Click **"Add permissions"** → **"Create inline policy"**
+4. Tab **"JSON"**
+5. Pega el JSON de arriba
+6. Nombre: `S3FlujoPRTAccess`
+7. Click **"Create policy"**
 
-```bash
-# Instalar AWS CLI
-pip install awscli
+---
 
-# Configurar credenciales
-aws configure
+## 🔐 Credenciales Configuradas en tu PC
 
-# Te pedirá:
-# AWS Access Key ID: [tu-access-key]
-# AWS Secret Access Key: [tu-secret-key]
-# Default region name: us-east-1
-# Default output format: json
+```cmd
+aws configure list
 ```
 
-## Opción 3: Crear usuario IAM nuevo solo para descarga
+---
 
-1. IAM → Users → Add user
-   - Nombre: `s3-downloader`
-   - Access type: Programmatic access
+## 🚀 Comandos para Descargar
 
-2. Attach la política creada arriba
+### Verificar Acceso
 
-3. Guarda las credenciales:
-   - Access Key ID
-   - Secret Access Key
-
-4. Úsalas en tu máquina local:
-   ```bash
-   export AWS_ACCESS_KEY_ID=tu-access-key
-   export AWS_SECRET_ACCESS_KEY=tu-secret-access-key
-   ```
-
-## Verificar permisos
-
-Prueba que tienes acceso:
-
-```bash
-# Listar bucket
-aws s3 ls s3://flujoprtimagenes/capturas/
-
-# Descargar un archivo de prueba
-aws s3 cp s3://flujoprtimagenes/capturas/2026/02/01/test.jpg ./test.jpg
+```cmd
+aws s3 ls s3://flujo-prt-imagenes/capturas/
 ```
 
-## Descargar todo el bucket
+**Resultado esperado:**
 
-### Método 1: AWS CLI (Más rápido)
-
-```bash
-# Descargar todo el bucket
-aws s3 sync s3://flujoprtimagenes/capturas/ ./capturas_descargadas/
-
-# Solo descargar nuevos/modificados
-aws s3 sync s3://flujoprtimagenes/capturas/ ./capturas_descargadas/ --size-only
-
-# Descargar solo de una fecha específica
-aws s3 sync s3://flujoprtimagenes/capturas/2026/02/ ./capturas_descargadas/2026_02/
+```
+                           PRE 2026/
 ```
 
-### Método 2: Script Python (Incluido)
+### Descargar TODO el Bucket
 
-```bash
-# Usar el script download_s3_bucket.py
+**Opción 1: AWS CLI (Recomendado - Más rápido)**
+
+```cmd
+aws s3 sync s3://flujo-prt-imagenes/capturas/ "D:\Trabajos\Proyectos Personales\FlujoPRT_main\capturas_descargadas\"
+```
+
+**Opciones útiles:**
+
+```cmd
+# Solo archivos nuevos/modificados
+aws s3 sync s3://flujo-prt-imagenes/capturas/ "D:\Trabajos\Proyectos Personales\FlujoPRT_main\capturas_descargadas\" --size-only
+
+# Con progreso detallado
+aws s3 sync s3://flujo-prt-imagenes/capturas/ "D:\Trabajos\Proyectos Personales\FlujoPRT_main\capturas_descargadas\" --progress
+
+# Solo una fecha específica
+aws s3 sync s3://flujo-prt-imagenes/capturas/2026/02/07/ "D:\Trabajos\Proyectos Personales\FlujoPRT_main\capturas_descargadas\2026\02\07\"
+```
+
+**Opción 2: Script Python**
+
+```cmd
+cd "D:\Trabajos\Proyectos Personales\FlujoPRT_main"
 python download_s3_bucket.py
-
-# O solo listar sin descargar
-python download_s3_bucket.py list
 ```
 
-## Troubleshooting
+---
 
-### Error: "Unable to locate credentials"
-```bash
-# Verifica que las credenciales están configuradas
+## ⚠️ Troubleshooting
+
+### Error: "InvalidAccessKeyId"
+
+```cmd
+# Verifica las credenciales
 aws configure list
 
-# O usa variables de entorno
-export AWS_ACCESS_KEY_ID=...
-export AWS_SECRET_ACCESS_KEY=...
+# Reconfigura si es necesario
+aws configure
 ```
 
-### Error: "Access Denied"
-- Verifica que la política IAM está correctamente asignada
-- Verifica que el bucket name es correcto
-- Verifica que tu usuario tiene la política attachada
+### Error: "AccessDenied"
 
-### Bucket policy (Alternativa)
-Si prefieres hacer el bucket público (NO RECOMENDADO para datos sensibles):
+- ✅ Verifica que asignaste la política al usuario
+- ✅ Espera 1-2 minutos para que los permisos se propaguen
+- ✅ Verifica el nombre del bucket: `flujo-prt-imagenes` (CON guiones)
 
-```json
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Sid": "PublicReadGetObject",
-            "Effect": "Allow",
-            "Principal": "*",
-            "Action": "s3:GetObject",
-            "Resource": "arn:aws:s3:::flujoprtimagenes/*"
-        }
-    ]
-}
+### Error: "NoSuchBucket"
+
+- ❌ Nombre incorrecto: `flujoprtimagenes` (sin guiones)
+- ✅ Nombre correcto: `flujo-prt-imagenes` (con guiones)
+
+### Ver permisos actuales del usuario
+
+```cmd
+aws iam list-attached-user-policies --user-name s3-downloader
 ```
 
-Aplica en: S3 Console → Bucket → Permissions → Bucket Policy
+---
+
+## 📊 Monitorear Descarga
+
+```cmd
+# Ver tamaño del bucket
+aws s3 ls s3://flujo-prt-imagenes/capturas/ --recursive --human-readable --summarize
+
+# Contar archivos (PowerShell)
+(aws s3 ls s3://flujo-prt-imagenes/capturas/ --recursive).Count
+```
+
+---
+
+## 🔒 Seguridad
+
+**✅ Buenas prácticas:**
+
+- Usuario `s3-downloader` solo tiene permisos de lectura (GetObject, ListBucket)
+- No puede escribir, borrar ni modificar archivos
+- Credenciales guardadas localmente en `~/.aws/credentials` (protegido por Windows)
+
+Si las credenciales se comprometen:
+
+1. IAM → Users → s3-downloader → Security credentials
+2. Desactiva o borra el Access Key comprometido
+3. Crea uno nuevo
+4. Ejecuta `aws configure` con las nuevas credenciales
+
+---
+
+## 📍 Ubicación de Descarga
+
+```
+D:\Trabajos\Proyectos Personales\FlujoPRT_main\capturas_descargadas\
+```
+
+Estructura esperada:
+
+```
+capturas_descargadas/
+├── capturas/
+│   └── 2026/
+│       ├── 02/
+│       │   ├── 01/
+│       │   │   ├── Chillan/
+│       │   │   │   ├── CHL_20260201_080000.jpg
+│       │   │   │   └── ...
+│       │   │   └── Concepcion/
+│       │   │       ├── CCP_20260201_080000.jpg
+│       │   │       └── ...
+│       │   ├── 02/
+│       │   ├── 03/
+│       │   └── ...
+```
