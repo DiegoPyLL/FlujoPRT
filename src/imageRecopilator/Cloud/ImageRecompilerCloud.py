@@ -746,23 +746,48 @@ class SundayWorker:
             keys_descargadas = []
             
             config = Config(
-                max_pool_connections=50,
-                retries={'max_attempts': 3, 'mode': 'adaptive'}
+                max_pool_connections=10,
+                retries={'max_attempts': 5, 'mode': 'adaptive'},
+                read_timeout=120,
+                connect_timeout=60
             )
             
             async with self.session.client('s3', config=config) as s3:
-                sem = asyncio.Semaphore(5)
+                sem = asyncio.Semaphore(3)  # Reducido a 3 para evitar saturar conexiones
                 
                 async def descargar_y_validar(img_info):
                     async with sem:
-                        obj = await s3.get_object(Bucket=S3_BUCKET, Key=img_info['key'])
-                        data = await obj['Body'].read()
-                        return data, img_info['key']
+                        max_retries = 3
+                        last_error = None
+                        for attempt in range(max_retries):
+                            try:
+                                obj = await s3.get_object(Bucket=S3_BUCKET, Key=img_info['key'])
+                                data = await obj['Body'].read()
+                                return data, img_info['key']
+                            except Exception as e:
+                                last_error = e
+                                if attempt == max_retries - 1:
+                                    logger.error(f"  [ERROR] Fallo descarga {img_info['key']} después de {max_retries} intentos: {e}")
+                                    raise
+                                logger.warning(f"  [RETRY] Intento {attempt + 1}/{max_retries} falló para {img_info['key']}: {e}")
+                                await asyncio.sleep(2 ** attempt)  # Exponential backoff: 1s, 2s, 4s
+                        
+                        # Fallback: si llegamos aquí sin retornar ni lanzar excepción
+                        raise Exception(f"Descarga falló para {img_info['key']}: {last_error}")
                 
                 tasks = [descargar_y_validar(img) for img in imagenes]
-                resultados = await asyncio.gather(*tasks)
+                resultados = await asyncio.gather(*tasks, return_exceptions=True)
                 
-                for data, key in resultados:
+                for resultado in resultados:
+                    # Skip failed downloads or None results
+                    if isinstance(resultado, BaseException):
+                        logger.warning(f"  [SKIP] Descarga fallida (BaseException): {resultado}")
+                        continue
+                    if resultado is None:
+                        logger.warning(f"  [SKIP] Descarga retornó None")
+                        continue
+                    
+                    data, key = resultado
                     keys_descargadas.append(key)
                     
                     try:
