@@ -18,6 +18,7 @@ from collections import defaultdict
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
 from botocore.config import Config
 from PIL import Image
+from imageRecopilator.Cloud.MetadataIngestor import subir_metadata_captura, ingestar_catalogo_plantas
 
 """
 SISTEMA COMPLETO: CAPTURA + PROCESAMIENTO DOMINICAL
@@ -30,13 +31,7 @@ FUNCIONAMIENTO:
 3. Domingos: Ejecuta job de procesamiento (timelapses)
 4. Vuelve al paso 1
 
-OPTIMIZACIONES DOMINGO:
------------------------
-- Deduplicación temprana (antes de descargar)
-- Procesamiento por lotes (2 plantas en paralelo)
-- Descargas paralelas (5 a la vez)
-- Borrado progresivo
-- FFmpeg optimizado (preset=fast, crf=28)
+
 """
 
 # uvloop para mejor performance en Linux
@@ -486,7 +481,18 @@ async def worker_subida_s3(worker_id: int):
                     
                     await metricas.registrar_subida(bytes_originales, len(data_comprimida))
                     logger.debug(f"[W{worker_id}] ✓ {planta} → s3://{S3_BUCKET}/{key}")
-                    
+
+                    # Generar y subir metadata de captura (best-effort)
+                    await subir_metadata_captura(
+                        s3_client=s3,
+                        planta=planta,
+                        fecha_str=fecha_str,
+                        s3_key_imagen=key,
+                        bytes_originales=bytes_originales,
+                        bytes_comprimidos=len(data_comprimida),
+                        bucket=S3_BUCKET
+                    )
+
                 except (BotoCoreError, ClientError) as e:
                     await metricas.registrar_error_s3()
                     logger.error(f"[W{worker_id}] S3 {planta}: {e}")
@@ -634,11 +640,14 @@ async def main():
     logger.info(f"S3: s3://{S3_BUCKET}/{S3_PREFIX}")
     logger.info("="*60)
 
+    # Ingesta de catálogo de plantas (metadata)
+    await ingestar_catalogo_plantas(S3_BUCKET)
+
     async with aiohttp.ClientSession(
         connector=connector,
         timeout=timeout
     ) as session:
-        
+
         # BUCLE PRINCIPAL INFINITO - SOLO CAPTURA
         while RUNNING:
             logger.info("Iniciando ciclo de capturas continuo...")
