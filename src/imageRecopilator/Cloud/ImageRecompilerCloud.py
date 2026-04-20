@@ -12,7 +12,6 @@ FUNCIONAMIENTO:
 """
 
 import asyncio
-import csv
 import json
 import aiohttp
 import aioboto3
@@ -48,8 +47,6 @@ S3_BUCKET = os.getenv("S3_BUCKET", "flujo-prt-imagenes")
 S3_PREFIX = os.getenv("S3_PREFIX", "capturas")
 
 METADATA_PREFIX = os.getenv("METADATA_PREFIX", "metadata")
-PLANTAS_CSV_PATH = os.getenv("PLANTAS_CSV_PATH", "OrganizacionPlantas/plantas_revision_tecnica.csv")
-METADATA_SNAPSHOT = os.getenv("METADATA_SNAPSHOT", "false").lower() == "true"
 
 INTERVALO = int(os.getenv("INTERVALO", "60"))
 MARGEN_PREVIO = int(os.getenv("MARGEN_PREVIO", "1200"))  # 20 min
@@ -308,65 +305,6 @@ async def obtener_metadata_ec2() -> dict | None:
 # Metadata: funciones puras
 # =========================
 
-def _normalizar_nombre_planta(nombre: str) -> str:
-    return nombre.strip().casefold().replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
-
-
-def leer_csv_plantas(csv_path: str) -> list[dict]:
-    try:
-        with open(csv_path, 'r', encoding='utf-8') as f:
-            registros = list(csv.DictReader(f))
-
-        plataformas = set(r.get("Plataforma", "").strip() for r in registros if r.get("Plataforma"))
-        logger.info(f"CSV leído: {len(registros)} plantas de {len(plataformas)} plataformas")
-        return registros
-
-    except FileNotFoundError:
-        logger.error(f"No se encontró CSV: {csv_path}")
-        raise
-
-
-def construir_catalogo_plantas(plantas_csv: list[dict]) -> list[dict]:
-    camaras_norm = {_normalizar_nombre_planta(k): k for k in camaras.keys()}
-
-    catalogo = []
-    for row in plantas_csv:
-        nombre = row.get("Comuna", "").strip()
-        nombre_norm = _normalizar_nombre_planta(nombre)
-
-        if nombre_norm not in camaras_norm:
-            continue
-
-        nombre_real = camaras_norm[nombre_norm]
-        cam_id = camaras[nombre_real]
-        denom = DENOMINADORES.get(nombre_real, nombre_real.replace(" ", "_"))
-        horario = HORARIOS.get(nombre_real, {})
-
-        record = {
-            "planta_id": denom,
-            "nombre": nombre,
-            "plataforma": row.get("Plataforma", "").strip(),
-            "region": row.get("Region", "").strip(),
-            "comuna": nombre,
-            "direccion": row.get("Direccion", "").strip(),
-            "url_reserva": row.get("URL_Reserva", "").strip(),
-            "cam_id": cam_id,
-            "horarios": {
-                "semana": {
-                    "apertura": horario.get("semana", ("", ""))[0],
-                    "cierre": horario.get("semana", ("", ""))[1]
-                },
-                "sabado": {
-                    "apertura": horario.get("sabado", ("", ""))[0],
-                    "cierre": horario.get("sabado", ("", ""))[1]
-                }
-            }
-        }
-        catalogo.append(record)
-
-    logger.info(f"Catálogo construido: {len(catalogo)} plantas con cámara activa (de {len(plantas_csv)} en CSV)")
-    return catalogo
-
 
 def generar_s3_key_metadata(planta: str, fecha_str: str, prefix: str = METADATA_PREFIX) -> str:
     dt = datetime.strptime(fecha_str, "%Y%m%d_%H%M%S")
@@ -436,57 +374,6 @@ async def subir_json_s3(s3_client, bucket: str, key: str, payload: dict) -> bool
         logger.warning(f"[META] S3 error subiendo {key}: {e}")
         return False
 
-
-async def ingestar_catalogo_plantas(
-    bucket: str,
-    prefix: str = METADATA_PREFIX,
-    csv_path: str = PLANTAS_CSV_PATH
-) -> int:
-    global _ec2_metadata_cache
-
-    logger.info("=" * 60)
-    logger.info("=== INICIO INGESTA CATÁLOGO PLANTAS ===")
-    logger.info("=" * 60)
-
-    try:
-        _ec2_metadata_cache = await obtener_metadata_ec2()
-
-        plantas_csv = leer_csv_plantas(csv_path)
-        catalogo = construir_catalogo_plantas(plantas_csv)
-
-        payload = {
-            "version": "1",
-            "generado_en": datetime.now().isoformat(timespec='seconds'),
-            "total_plantas": len(catalogo),
-            "infraestructura": _ec2_metadata_cache,
-            "plantas": catalogo
-        }
-
-        session = aioboto3.Session()
-        async with session.client('s3') as s3:  # type: ignore[attr-defined]
-            key_catalogo = f"{prefix}/plantas/catalogo_plantas.json"
-            exito = await subir_json_s3(s3, bucket, key_catalogo, payload)
-
-            if exito:
-                logger.info(f"Catálogo subido: {len(catalogo)} plantas → s3://{bucket}/{key_catalogo}")
-            else:
-                logger.error(f"Fallo subiendo catálogo a {key_catalogo}")
-                return 0
-
-            if METADATA_SNAPSHOT:
-                fecha_hoy = datetime.now().strftime("%Y%m%d")
-                key_snapshot = f"{prefix}/plantas/catalogo_plantas_{fecha_hoy}.json"
-                snapshot_ok = await subir_json_s3(s3, bucket, key_snapshot, payload)
-                if snapshot_ok:
-                    logger.info(f"Snapshot guardado: {key_snapshot}")
-
-        logger.info("=" * 60)
-        return len(catalogo)
-
-    except Exception as e:
-        logger.error(f"Error en ingesta catálogo: {e}")
-        logger.error(traceback.format_exc())
-        return 0
 
 
 async def subir_metadata_captura(
@@ -890,7 +777,6 @@ async def main():
     logger.info(f"S3: s3://{S3_BUCKET}/{S3_PREFIX}")
     logger.info("="*60)
 
-    await ingestar_catalogo_plantas(S3_BUCKET)
 
     async with aiohttp.ClientSession(
         connector=connector,
