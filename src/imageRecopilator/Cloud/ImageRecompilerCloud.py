@@ -1,4 +1,18 @@
+"""
+SISTEMA COMPLETO: CAPTURA + METADATA - Pipeline de Captura CCTV
+===============================================================
+
+FUNCIONAMIENTO:
+---------------
+1. Verifica credenciales AWS
+2. Ingesta catálogo de plantas a S3 (metadata estructurada)
+3. Loop principal infinito de captura (Lunes-Sábado)
+4. Por cada imagen subida, genera y sube metadata JSON espejo
+
+"""
+
 import asyncio
+import csv
 import json
 import aiohttp
 import aioboto3
@@ -11,28 +25,10 @@ import hashlib
 import signal
 import logging
 import traceback
-import subprocess
-import tempfile
 import io
-from collections import defaultdict
 from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
 from botocore.config import Config
 from PIL import Image
-from imageRecopilator.Cloud.MetadataIngestor import subir_metadata_captura, ingestar_catalogo_plantas
-
-"""
-SISTEMA COMPLETO: CAPTURA + PROCESAMIENTO DOMINICAL
-====================================================
-
-FUNCIONAMIENTO:
----------------
-1. Loop principal infinito
-2. Lunes-Sábado: Captura imágenes cada 60s y sube a S3
-3. Domingos: Ejecuta job de procesamiento (timelapses)
-4. Vuelve al paso 1
-
-
-"""
 
 # uvloop para mejor performance en Linux
 try:
@@ -50,6 +46,10 @@ BASE_URL = "https://pti-cameras.cl.tuv.com/camaras"
 
 S3_BUCKET = os.getenv("S3_BUCKET", "flujo-prt-imagenes")
 S3_PREFIX = os.getenv("S3_PREFIX", "capturas")
+
+METADATA_PREFIX = os.getenv("METADATA_PREFIX", "metadata")
+PLANTAS_CSV_PATH = os.getenv("PLANTAS_CSV_PATH", "OrganizacionPlantas/plantas_revision_tecnica.csv")
+METADATA_SNAPSHOT = os.getenv("METADATA_SNAPSHOT", "false").lower() == "true"
 
 INTERVALO = int(os.getenv("INTERVALO", "60"))
 MARGEN_PREVIO = int(os.getenv("MARGEN_PREVIO", "1200"))  # 20 min
@@ -198,29 +198,29 @@ class Metricas:
         self.bytes_originales = 0
         self.ultima_impresion = time.time()
         self.lock = asyncio.Lock()
-    
+
     async def registrar_captura(self):
         async with self.lock:
             self.imagenes_capturadas += 1
-    
+
     async def registrar_subida(self, bytes_orig, bytes_comp):
         async with self.lock:
             self.imagenes_subidas += 1
             self.bytes_originales += bytes_orig
             self.bytes_comprimidos += bytes_comp
-    
+
     async def registrar_duplicada(self):
         async with self.lock:
             self.imagenes_duplicadas += 1
-    
+
     async def registrar_error_descarga(self):
         async with self.lock:
             self.errores_descarga += 1
-    
+
     async def registrar_error_s3(self):
         async with self.lock:
             self.errores_s3 += 1
-    
+
     async def imprimir_si_toca(self):
         ahora = time.time()
         async with self.lock:
@@ -228,7 +228,7 @@ class Metricas:
                 ahorro_pct = 0
                 if self.bytes_originales > 0:
                     ahorro_pct = ((self.bytes_originales - self.bytes_comprimidos) / self.bytes_originales) * 100
-                
+
                 logger.info("="*60)
                 logger.info(f"MÉTRICAS ({METRICAS_INTERVALO/60:.0f} min):")
                 logger.info(f"  Capturadas: {self.imagenes_capturadas} | Subidas: {self.imagenes_subidas} | Duplicadas: {self.imagenes_duplicadas}")
@@ -236,7 +236,7 @@ class Metricas:
                 logger.info(f"  Compresión: {self.bytes_originales/1024/1024:.1f}MB -> {self.bytes_comprimidos/1024/1024:.1f}MB (ahorro {ahorro_pct:.1f}%)")
                 logger.info(f"  Cola: {cola_subida.qsize()}/{QUEUE_SIZE}")
                 logger.info("="*60)
-                
+
                 self.imagenes_capturadas = 0
                 self.imagenes_subidas = 0
                 self.imagenes_duplicadas = 0
@@ -247,6 +247,270 @@ class Metricas:
                 self.ultima_impresion = ahora
 
 metricas = Metricas()
+
+
+
+
+# =========================
+# Metadata EC2 (IMDS v2)
+# =========================
+
+_ec2_metadata_cache: dict | None = None
+
+IMDS_BASE = "http://169.254.169.254/latest"
+IMDS_TOKEN_URL = f"{IMDS_BASE}/api/token"
+IMDS_TIMEOUT = aiohttp.ClientTimeout(total=2)
+
+
+async def obtener_metadata_ec2() -> dict | None:
+    """
+    Consulta IMDS v2 de EC2. Retorna dict con info o None si no estamos en EC2.
+    Best-effort: timeout 2s, no propaga excepciones.
+    """
+    try:
+        async with aiohttp.ClientSession(timeout=IMDS_TIMEOUT) as session:
+            async with session.put(
+                IMDS_TOKEN_URL,
+                headers={"X-aws-ec2-metadata-token-ttl-seconds": "60"}
+            ) as token_resp:
+                if token_resp.status != 200:
+                    logger.debug("[EC2] IMDS token request falló, no estamos en EC2")
+                    return None
+                token = await token_resp.text()
+
+            headers = {"X-aws-ec2-metadata-token": token}
+            campos = {
+                "instance_id": f"{IMDS_BASE}/meta-data/instance-id",
+                "instance_type": f"{IMDS_BASE}/meta-data/instance-type",
+                "availability_zone": f"{IMDS_BASE}/meta-data/placement/availability-zone",
+                "ami_id": f"{IMDS_BASE}/meta-data/ami-id",
+            }
+
+            resultado = {}
+            for key, url in campos.items():
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        resultado[key] = (await resp.text()).strip()
+
+            az = resultado.get("availability_zone", "")
+            if az:
+                resultado["region"] = az[:-1]
+
+            logger.info(f"[EC2] Metadata obtenida: {resultado.get('instance_type', '?')} en {resultado.get('region', '?')}")
+            return resultado if resultado else None
+
+    except Exception:
+        logger.debug("[EC2] IMDS no disponible (probablemente no estamos en EC2)")
+        return None
+
+
+# =========================
+# Metadata: funciones puras
+# =========================
+
+def _normalizar_nombre_planta(nombre: str) -> str:
+    return nombre.strip().casefold().replace("á", "a").replace("é", "e").replace("í", "i").replace("ó", "o").replace("ú", "u")
+
+
+def leer_csv_plantas(csv_path: str) -> list[dict]:
+    try:
+        with open(csv_path, 'r', encoding='utf-8') as f:
+            registros = list(csv.DictReader(f))
+
+        plataformas = set(r.get("Plataforma", "").strip() for r in registros if r.get("Plataforma"))
+        logger.info(f"CSV leído: {len(registros)} plantas de {len(plataformas)} plataformas")
+        return registros
+
+    except FileNotFoundError:
+        logger.error(f"No se encontró CSV: {csv_path}")
+        raise
+
+
+def construir_catalogo_plantas(plantas_csv: list[dict]) -> list[dict]:
+    camaras_norm = {_normalizar_nombre_planta(k): k for k in camaras.keys()}
+
+    catalogo = []
+    for row in plantas_csv:
+        nombre = row.get("Comuna", "").strip()
+        nombre_norm = _normalizar_nombre_planta(nombre)
+
+        if nombre_norm not in camaras_norm:
+            continue
+
+        nombre_real = camaras_norm[nombre_norm]
+        cam_id = camaras[nombre_real]
+        denom = DENOMINADORES.get(nombre_real, nombre_real.replace(" ", "_"))
+        horario = HORARIOS.get(nombre_real, {})
+
+        record = {
+            "planta_id": denom,
+            "nombre": nombre,
+            "plataforma": row.get("Plataforma", "").strip(),
+            "region": row.get("Region", "").strip(),
+            "comuna": nombre,
+            "direccion": row.get("Direccion", "").strip(),
+            "url_reserva": row.get("URL_Reserva", "").strip(),
+            "cam_id": cam_id,
+            "horarios": {
+                "semana": {
+                    "apertura": horario.get("semana", ("", ""))[0],
+                    "cierre": horario.get("semana", ("", ""))[1]
+                },
+                "sabado": {
+                    "apertura": horario.get("sabado", ("", ""))[0],
+                    "cierre": horario.get("sabado", ("", ""))[1]
+                }
+            }
+        }
+        catalogo.append(record)
+
+    logger.info(f"Catálogo construido: {len(catalogo)} plantas con cámara activa (de {len(plantas_csv)} en CSV)")
+    return catalogo
+
+
+def generar_s3_key_metadata(planta: str, fecha_str: str, prefix: str = METADATA_PREFIX) -> str:
+    dt = datetime.strptime(fecha_str, "%Y%m%d_%H%M%S")
+    denom = DENOMINADORES.get(planta, planta.replace(" ", "_"))
+    filename = f"{denom}_{fecha_str}.json"
+    return (
+        f"{prefix}/"
+        f"capturas/"
+        f"{dt.year}/"
+        f"{dt.month:02d}/"
+        f"{dt.day:02d}/"
+        f"{planta}/"
+        f"{filename}"
+    )
+
+
+def generar_metadata_captura(
+    planta: str,
+    fecha_str: str,
+    s3_key_imagen: str,
+    bytes_originales: int,
+    bytes_comprimidos: int,
+    bucket: str
+) -> dict:
+    timestamp_captura = datetime.strptime(fecha_str, "%Y%m%d_%H%M%S").isoformat(timespec='seconds')
+    ratio = round(bytes_comprimidos / bytes_originales, 4) if bytes_originales > 0 else None
+
+    ec2_info = None
+    if _ec2_metadata_cache:
+        ec2_info = {
+            "instance_id": _ec2_metadata_cache.get("instance_id"),
+            "instance_type": _ec2_metadata_cache.get("instance_type")
+        }
+
+    return {
+        "version": "1",
+        "planta_id": DENOMINADORES.get(planta, planta.replace(" ", "_")),
+        "planta_nombre": planta,
+        "plataforma": "TÜV Rheinland",
+        "timestamp_captura": timestamp_captura,
+        "fecha_str": fecha_str,
+        "s3_imagen_key": s3_key_imagen,
+        "s3_bucket": bucket,
+        "bytes_originales": bytes_originales,
+        "bytes_comprimidos": bytes_comprimidos,
+        "ratio_compresion": ratio,
+        "instancia_ec2": ec2_info,
+        "generado_en": datetime.now().isoformat(timespec='seconds')
+    }
+
+
+# =========================
+# Metadata: I/O en S3
+# =========================
+
+async def subir_json_s3(s3_client, bucket: str, key: str, payload: dict) -> bool:
+    try:
+        body = json.dumps(payload, ensure_ascii=False, indent=None).encode('utf-8')
+        await s3_client.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=body,
+            ContentType="application/json"
+        )
+        return True
+    except (BotoCoreError, ClientError) as e:
+        logger.warning(f"[META] S3 error subiendo {key}: {e}")
+        return False
+
+
+async def ingestar_catalogo_plantas(
+    bucket: str,
+    prefix: str = METADATA_PREFIX,
+    csv_path: str = PLANTAS_CSV_PATH
+) -> int:
+    global _ec2_metadata_cache
+
+    logger.info("=" * 60)
+    logger.info("=== INICIO INGESTA CATÁLOGO PLANTAS ===")
+    logger.info("=" * 60)
+
+    try:
+        _ec2_metadata_cache = await obtener_metadata_ec2()
+
+        plantas_csv = leer_csv_plantas(csv_path)
+        catalogo = construir_catalogo_plantas(plantas_csv)
+
+        payload = {
+            "version": "1",
+            "generado_en": datetime.now().isoformat(timespec='seconds'),
+            "total_plantas": len(catalogo),
+            "infraestructura": _ec2_metadata_cache,
+            "plantas": catalogo
+        }
+
+        session = aioboto3.Session()
+        async with session.client('s3') as s3:  # type: ignore[attr-defined]
+            key_catalogo = f"{prefix}/plantas/catalogo_plantas.json"
+            exito = await subir_json_s3(s3, bucket, key_catalogo, payload)
+
+            if exito:
+                logger.info(f"Catálogo subido: {len(catalogo)} plantas → s3://{bucket}/{key_catalogo}")
+            else:
+                logger.error(f"Fallo subiendo catálogo a {key_catalogo}")
+                return 0
+
+            if METADATA_SNAPSHOT:
+                fecha_hoy = datetime.now().strftime("%Y%m%d")
+                key_snapshot = f"{prefix}/plantas/catalogo_plantas_{fecha_hoy}.json"
+                snapshot_ok = await subir_json_s3(s3, bucket, key_snapshot, payload)
+                if snapshot_ok:
+                    logger.info(f"Snapshot guardado: {key_snapshot}")
+
+        logger.info("=" * 60)
+        return len(catalogo)
+
+    except Exception as e:
+        logger.error(f"Error en ingesta catálogo: {e}")
+        logger.error(traceback.format_exc())
+        return 0
+
+
+async def subir_metadata_captura(
+    s3_client,
+    planta: str,
+    fecha_str: str,
+    s3_key_imagen: str,
+    bytes_originales: int,
+    bytes_comprimidos: int,
+    bucket: str,
+    prefix: str = METADATA_PREFIX
+) -> None:
+    try:
+        metadata = generar_metadata_captura(
+            planta, fecha_str, s3_key_imagen, bytes_originales, bytes_comprimidos, bucket
+        )
+        key_metadata = generar_s3_key_metadata(planta, fecha_str, prefix)
+        exito = await subir_json_s3(s3_client, bucket, key_metadata, metadata)
+
+        if exito:
+            logger.debug(f"[META] {planta} → s3://{bucket}/{key_metadata}")
+
+    except Exception as e:
+        logger.warning(f"[META] No se pudo generar metadata para {planta}: {e}")
 
 
 # =========================
@@ -290,18 +554,17 @@ def segundos_hasta_apertura(planta):
         return int((apertura - ahora).total_seconds())
     else:
         dia_siguiente = (dia + 1) % 7
-        
+
         if dia_siguiente == 6:
             return None
-            
+
         tipo_siguiente = "sabado" if dia_siguiente == 5 else "semana"
         inicio_siguiente, _ = HORARIOS[planta][tipo_siguiente]
-        
+
         hora_inicio_siguiente = datetime.strptime(inicio_siguiente, "%H:%M").time()
         apertura_siguiente = datetime.combine(ahora.date(), hora_inicio_siguiente) + timedelta(days=1)
-        
-        segundos = int((apertura_siguiente - ahora).total_seconds())
-        return segundos
+
+        return int((apertura_siguiente - ahora).total_seconds())
 
 
 def todas_fuera_de_horario():
@@ -326,50 +589,45 @@ def obtener_tiempos_restantes():
 def obtener_menor_tiempo_espera():
     tiempos = obtener_tiempos_restantes()
     tiempos_validos = [t for t in tiempos.values() if t is not None and t > 0]
-    
+
     if not tiempos_validos:
         return None
-    
+
     return min(tiempos_validos)
 
 
 async def esperar_hasta_apertura():
-    """
-    Suspensión COMPARTIDA - todas las plantas esperan juntas.
-    """
     while RUNNING:
         if es_domingo():
             ahora = datetime.now()
             lunes = ahora + timedelta(days=1)
             while lunes.weekday() != 0:
                 lunes += timedelta(days=1)
-            
+
             primer_hora = min(HORARIOS[p]["semana"][0] for p in camaras.keys())
             hora_apertura = datetime.strptime(primer_hora, "%H:%M").time()
             apertura_lunes = datetime.combine(lunes.date(), hora_apertura)
-            
+
             despertar = apertura_lunes - timedelta(seconds=MARGEN_PREVIO)
             segundos = int((despertar - ahora).total_seconds())
-            
+
             horas = segundos // 3600
             minutos = (segundos % 3600) // 60
             logger.info(f"Domingo. Suspendiendo {horas}h {minutos}min (hasta 20 min antes de apertura del lunes)...")
-            
-            # Sleep con checkpoints cada minuto
+
             for _ in range(int(segundos / 60)):
                 if not RUNNING:
                     return
                 await asyncio.sleep(60)
             continue
-        
+
         if todas_fuera_de_horario():
             menor = obtener_menor_tiempo_espera()
             if menor:
                 espera_real = max(0, menor - MARGEN_PREVIO)
                 minutos = int(espera_real / 60)
                 logger.info(f"Todas fuera de horario. Suspendiendo {minutos} min (hasta 20 min antes de apertura)...")
-                
-                # Sleep con checkpoints cada minuto
+
                 for _ in range(int(espera_real / 60)):
                     if not RUNNING:
                         return
@@ -397,7 +655,7 @@ def recomprimir_jpeg_sync(data: bytes) -> bytes:
         img = Image.open(io.BytesIO(data))
         if 'exif' in img.info:
             img.info.pop('exif')
-        
+
         buffer = io.BytesIO()
         img.save(buffer, format='JPEG', quality=JPEG_QUALITY, optimize=True)
         return buffer.getvalue()
@@ -432,11 +690,11 @@ def generar_s3_key(planta: str, fecha_str: str) -> str:
 
 async def verificar_credenciales_aws():
     logger.info("Verificando credenciales AWS...")
-    
+
     session = aioboto3.Session()
-    
+
     try:
-        async with session.client('sts') as sts:
+        async with session.client('sts') as sts:  # type: ignore[attr-defined]
             identity = await sts.get_caller_identity()
             logger.info(f"✓ Credenciales AWS válidas")
             logger.info(f"  Account: {identity['Account']}")
@@ -458,18 +716,18 @@ async def verificar_credenciales_aws():
 
 async def worker_subida_s3(worker_id: int):
     session = aioboto3.Session()
-    
+
     logger.info(f"Worker S3 #{worker_id} iniciado")
-    
-    async with session.client('s3') as s3:
+
+    async with session.client('s3') as s3:  # type: ignore[attr-defined]
         while RUNNING or not cola_subida.empty():
             try:
                 item = await asyncio.wait_for(cola_subida.get(), timeout=5.0)
-                
+
                 planta, fecha_str, data_comprimida, bytes_originales = item
-                
+
                 key = generar_s3_key(planta, fecha_str)
-                
+
                 try:
                     await s3.put_object(
                         Bucket=S3_BUCKET,
@@ -478,11 +736,10 @@ async def worker_subida_s3(worker_id: int):
                         ContentType="image/jpeg",
                         StorageClass="INTELLIGENT_TIERING"
                     )
-                    
+
                     await metricas.registrar_subida(bytes_originales, len(data_comprimida))
                     logger.debug(f"[W{worker_id}] ✓ {planta} → s3://{S3_BUCKET}/{key}")
 
-                    # Generar y subir metadata de captura (best-effort)
                     await subir_metadata_captura(
                         s3_client=s3,
                         planta=planta,
@@ -496,18 +753,17 @@ async def worker_subida_s3(worker_id: int):
                 except (BotoCoreError, ClientError) as e:
                     await metricas.registrar_error_s3()
                     logger.error(f"[W{worker_id}] S3 {planta}: {e}")
-                
+
                 finally:
                     cola_subida.task_done()
-                    
+
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
-                # Permite cancelación limpia si se solicita desde main
                 break
             except Exception as e:
                 logger.error(f"[W{worker_id}] Error: {e}")
-    
+
     logger.info(f"Worker S3 #{worker_id} finalizado")
 
 
@@ -516,9 +772,6 @@ async def worker_subida_s3(worker_id: int):
 # =========================
 
 async def capturar_camara(session, planta, cam_id):
-    """
-    Captura con ciclo independiente de 60 segundos.
-    """
     ultimo_hash = None
     errores_consecutivos = 0
 
@@ -549,11 +802,11 @@ async def capturar_camara(session, planta, cam_id):
                             logger.warning(f"{planta} - Intento {intento + 1}/5 HTTP {resp.status}")
                             await asyncio.sleep(2.5)
                             continue
-                        
+
                         data_original = await resp.read()
                         bytes_originales = len(data_original)
                         await metricas.registrar_captura()
-                        
+
                         data_comprimida = await recomprimir_jpeg(data_original)
                         h = hash_imagen(data_comprimida)
 
@@ -569,7 +822,7 @@ async def capturar_camara(session, planta, cam_id):
                                 logger.warning(f"{planta} cola llena")
                         else:
                             await metricas.registrar_duplicada()
-                        
+
                         exito = True
                         errores_consecutivos = 0
                         break
@@ -578,7 +831,7 @@ async def capturar_camara(session, planta, cam_id):
                 logger.warning(f"{planta} - Intento {intento + 1}/5 timeout")
                 await asyncio.sleep(2.5)
             except asyncio.CancelledError:
-                raise # Re-lanzar para salir del loop
+                raise
             except Exception as e:
                 logger.warning(f"{planta} - Intento {intento + 1}/5 error: {e}")
                 await asyncio.sleep(2.5)
@@ -587,7 +840,7 @@ async def capturar_camara(session, planta, cam_id):
             errores_consecutivos += 1
             await metricas.registrar_error_descarga()
             logger.error(f"{planta} no respondió después de 5 intentos")
-            
+
             if errores_consecutivos >= 10:
                 logger.critical(f"{planta} - 10 errores consecutivos, pausa de 10 min")
                 for _ in range(10):
@@ -601,13 +854,10 @@ async def capturar_camara(session, planta, cam_id):
             await asyncio.sleep(INTERVALO + jitter)
         except asyncio.CancelledError:
             break
-        
+
         await metricas.imprimir_si_toca()
-    
+
     logger.info(f"{planta} - Tarea finalizada")
-
-
-
 
 
 # =========================
@@ -618,13 +868,13 @@ async def main():
     if not await verificar_credenciales_aws():
         logger.critical("ABORTANDO: Configura credenciales AWS primero")
         return
-    
+
     timeout = aiohttp.ClientTimeout(
         total=20,
         sock_connect=5,
         sock_read=15
     )
-    
+
     connector = aiohttp.TCPConnector(
         ssl=ssl_context,
         limit=50,
@@ -633,14 +883,13 @@ async def main():
     )
 
     logger.info("="*60)
-    logger.info("INICIANDO SISTEMA CAPTURA CCTV (SOLO CAPTURA)")
+    logger.info("INICIANDO SISTEMA CAPTURA CCTV")
     logger.info(f"Event Loop: {'uvloop' if 'uvloop' in str(asyncio.get_event_loop_policy()) else 'asyncio'}")
     logger.info(f"Cámaras: {len(camaras)} | Intervalo: {INTERVALO}s")
     logger.info(f"JPEG Quality: {JPEG_QUALITY} | Workers S3: {NUM_UPLOADERS}")
     logger.info(f"S3: s3://{S3_BUCKET}/{S3_PREFIX}")
     logger.info("="*60)
 
-    # Ingesta de catálogo de plantas (metadata)
     await ingestar_catalogo_plantas(S3_BUCKET)
 
     async with aiohttp.ClientSession(
@@ -648,37 +897,29 @@ async def main():
         timeout=timeout
     ) as session:
 
-        # BUCLE PRINCIPAL INFINITO - SOLO CAPTURA
         while RUNNING:
             logger.info("Iniciando ciclo de capturas continuo...")
-            
-            # Lanzar workers S3
+
             workers_s3 = [
                 asyncio.create_task(worker_subida_s3(i))
                 for i in range(NUM_UPLOADERS)
             ]
-            
-            # Lanzar capturas en paralelo
+
             tasks_captura = [
                 asyncio.create_task(capturar_camara(session, planta, cam_id))
                 for planta, cam_id in camaras.items()
             ]
-            
-            # MONITOREO CONTINUO
+
             while RUNNING:
                 await asyncio.sleep(60)
-            
-            # LIMPIEZA AL APAGAR
+
             logger.info("Shutdown detectado - Deteniendo tareas...")
 
-            # Cancelar tareas de captura primero
             for task in tasks_captura:
                 task.cancel()
-            
-            # Esperar confirmación de cancelación de capturas
+
             await asyncio.gather(*tasks_captura, return_exceptions=True)
-            
-            # Drenar cola antes de cancelar workers S3
+
             if not cola_subida.empty():
                 logger.info("Drenando cola de subida antes de cancelar workers...")
                 try:
@@ -686,22 +927,20 @@ async def main():
                 except asyncio.TimeoutError:
                     logger.warning("Timeout drenando cola - procediendo a cancelación forzada")
 
-            # Cancelar workers S3
             for task in workers_s3:
                 task.cancel()
-            
+
             await asyncio.gather(*workers_s3, return_exceptions=True)
-            
+
             logger.info("Ciclo de captura detenido.")
-            break  # Salir del bucle principal en shutdown
-        
-        # Cleanup final
+            break
+
         logger.info("Esperando que la cola se vacíe (cleanup final)...")
         if not cola_subida.empty():
-             try:
-                 await asyncio.wait_for(cola_subida.join(), timeout=60)
-             except Exception:
-                 pass
+            try:
+                await asyncio.wait_for(cola_subida.join(), timeout=60)
+            except Exception:
+                pass
         logger.info("Cola vacía - cierre completo")
 
 
