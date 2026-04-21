@@ -52,7 +52,7 @@ asegurarse de crear el ec2 y s3 en la misma region
 
        *   Volver a entrar a la sesión:
               tmux attach -t FlujoPRT_CCTV
-              tmux attach -t FlujoPRT_CCTV_Dashboard
+              tmux attach -t FlujoPRT_Dashboard
               tmux attach -t FlujoPRT_CCTV_Validator
 
        *   Ver sesiones activas:
