@@ -44,7 +44,8 @@ asegurarse de crear el ec2 y s3 en la misma region
               python3 src/imageRecopilator/Cloud/ImageRecompilerCloud.py
        
        *   Comando de ejecución FlujoPRT_CCTV_Dashboard:
-              python3 scripts/realtime_dashboard.py
+              streamlit run scripts/realtime_dashboard.py --server.port 8501 --server.address 0.0.0.0
+              http://54.234.236.12:8501
        
        *   Comando de ejecución FlujoPRT_CCTV_Validator:
               python3 scripts/validate_metadata.py
