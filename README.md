@@ -50,18 +50,19 @@ El sistema esta disenado para operar de forma continua en una instancia EC2, res
 FlujoPRT/
 ├── README.md
 ├── pytest.ini
-├── OrganizacionPlantas/
+├── data/
 │   ├── plantas_revision_tecnica.csv      # Fuente de datos: 116 plantas nacionales
 │   └── plantas_revision_tecnica.xlsx
+├── docs/
+│   ├── ComandosEjecucionCloud.txt        # Guia de comandos
+│   └── PERMISOS_S3.md                    # Politicas IAM necesarias
+├── deploy/
+│   ├── requirements.txt                  # Dependencias Python del runtime
+│   └── run.sh                            # Script de ejecucion en EC2
 ├── src/
 │   └── imageRecopilator/
 │       └── Cloud/
-│           ├── ImageRecompilerCloud.py    # Modulo principal de captura
-│           ├── MetadataIngestor.py        # Modulo de ingesta de metadata
-│           ├── requirements.txt           # Dependencias Python
-│           ├── run.sh                     # Script de ejecucion en EC2
-│           ├── ComandosEjecucionCloud.txt # Guia de comandos
-│           └── PERMISOS_S3.md             # Politicas IAM necesarias
+│           └── ImageRecompilerCloud.py   # Modulo principal (captura + metadata)
 └── tests/
     └── imageRecopilatorTest/
         ├── imageRecopilatorCloud_test.py
@@ -107,7 +108,7 @@ Cada archivo de metadata espeja exactamente la ruta de su imagen correspondiente
 sudo apt update && sudo apt install python3-pip awscli
 git clone https://github.com/DiegoPyLL/FlujoPRT
 cd FlujoPRT
-pip install --user -r src/imageRecopilator/Cloud/requirements.txt
+pip install --user -r deploy/requirements.txt
 ```
 
 ### En entorno local (desarrollo)
@@ -115,7 +116,7 @@ pip install --user -r src/imageRecopilator/Cloud/requirements.txt
 ```bash
 git clone https://github.com/DiegoPyLL/FlujoPRT
 cd FlujoPRT
-pip install -r src/imageRecopilator/Cloud/requirements.txt
+pip install -r deploy/requirements.txt
 ```
 
 ### Dependencias
@@ -157,7 +158,7 @@ Todas las variables se configuran mediante variables de entorno. Si no se define
 | Variable | Default | Descripcion |
 |----------|---------|-------------|
 | `METADATA_PREFIX` | `metadata` | Prefijo S3 para archivos de metadata |
-| `PLANTAS_CSV_PATH` | `OrganizacionPlantas/plantas_revision_tecnica.csv` | Ruta al CSV fuente |
+| `PLANTAS_CSV_PATH` | `data/plantas_revision_tecnica.csv` | Ruta al CSV fuente |
 | `METADATA_SNAPSHOT` | `false` | Si es `true`, guarda copia fechada del catalogo |
 | `CATALOGO_REFRESH_HORAS` | `24` | Horas entre actualizaciones del catalogo |
 
@@ -205,13 +206,13 @@ tmux attach -t FlujoPRT_CCTV
 ### Ejecucion con script de servicio
 
 ```bash
-chmod +x src/imageRecopilator/Cloud/run.sh
+chmod +x deploy/run.sh
 
-./src/imageRecopilator/Cloud/run.sh start    # Iniciar en background
-./src/imageRecopilator/Cloud/run.sh stop     # Detener
-./src/imageRecopilator/Cloud/run.sh restart  # Reiniciar
-./src/imageRecopilator/Cloud/run.sh status   # Ver estado
-./src/imageRecopilator/Cloud/run.sh logs     # Ver logs en tiempo real
+./deploy/run.sh start    # Iniciar en background
+./deploy/run.sh stop     # Detener
+./deploy/run.sh restart  # Reiniciar
+./deploy/run.sh status   # Ver estado
+./deploy/run.sh logs     # Ver logs en tiempo real
 ```
 
 ## Camaras Monitoreadas
@@ -255,7 +256,7 @@ El sistema no solo captura imagenes, tambien genera **datos estructurados** que 
 
 ### Fuente de datos: CSV de plantas
 
-El archivo `OrganizacionPlantas/plantas_revision_tecnica.csv` contiene informacion de **116 plantas de revision tecnica** de 15 plataformas nacionales:
+El archivo `data/plantas_revision_tecnica.csv` contiene informacion de **116 plantas de revision tecnica** de 15 plataformas nacionales:
 
 | Columna | Descripcion | Ejemplo |
 |---------|-------------|---------|
@@ -348,7 +349,7 @@ El modulo de metadata registra cada etapa del proceso:
 | CSV leido | INFO | `CSV leido: 116 plantas de 15 plataformas` |
 | Catalogo construido | INFO | `Catalogo construido: 14 con camara activa, 102 sin camara` |
 | Catalogo subido a S3 | INFO | `Catalogo subido: 116 registros -> s3://flujo-prt-imagenes/...` |
-| CSV no encontrado | ERROR | `No se encontro CSV: OrganizacionPlantas/plantas_revision_tecnica.csv` |
+| CSV no encontrado | ERROR | `No se encontro CSV: data/plantas_revision_tecnica.csv` |
 | Metadata de captura subida | DEBUG | `[META] Huechuraba -> s3://flujo-prt-imagenes/metadata/capturas/...` |
 | Error subiendo metadata | WARNING | `[META] No se pudo generar metadata para Huechuraba: ...` |
 
@@ -390,6 +391,36 @@ El sistema solo captura durante los horarios de operacion de cada planta:
 - **Margen previo**: Se despierta 20 minutos antes de la apertura
 
 ## Monitoreo y Verificacion
+
+### Dashboard en tiempo real (Streamlit)
+
+Visualiza el estado del pipeline (plantas OK / caidas, gaps, volumen subido a S3, ratio de compresion, latencia) leyendo los JSONs de metadata del dia actual.
+
+```bash
+# Instalar dependencias del dashboard (aisladas del runtime de captura)
+pip install -r scripts/requirements.txt
+
+# Levantar el dashboard (bind a loopback, no exponer a internet)
+streamlit run scripts/realtime_dashboard.py \
+    --server.port 8501 --server.address 127.0.0.1
+```
+
+Para acceder desde la maquina local cuando corre en EC2:
+
+```bash
+ssh -L 8501:localhost:8501 ec2-user@<ip-ec2>
+# luego abrir http://localhost:8501 en el browser
+```
+
+Variables de entorno relevantes:
+
+| Variable | Default | Descripcion |
+|----------|---------|-------------|
+| `DASHBOARD_REFRESH` | `300` | Segundos entre refresh automatico |
+| `GAP_THRESHOLD` | `180` | Segundos entre capturas para marcar gap |
+| `DOWN_THRESHOLD` | `900` | Segundos sin captura para marcar planta caida |
+
+El dashboard es read-only sobre S3, no interfiere con el capturador.
 
 ### Verificar que el sistema esta capturando
 

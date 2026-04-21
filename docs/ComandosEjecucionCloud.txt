@@ -26,7 +26,7 @@ asegurarse de crear el ec2 y s3 en la misma region
 * sudo apt install python3-pip awscli
 * git clone https://github.com/DiegoPyLL/FlujoPRT
 * cd FlujoPRT
-* pip install --user -r src/imageRecopilator/Cloud/requirements.txt
+* pip install --user -r deploy/requirements.txt
 
 
 
