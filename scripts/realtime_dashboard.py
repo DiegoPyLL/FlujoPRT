@@ -34,6 +34,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 S3_BUCKET = os.getenv("S3_BUCKET", "flujo-prt-imagenes")
 METADATA_PREFIX = os.getenv("METADATA_PREFIX", "metadata/capturas")
+STATS_PREFIX = os.getenv("STATS_PREFIX", "metadata/stats")
 DASHBOARD_REFRESH = int(os.getenv("DASHBOARD_REFRESH", "300"))
 GAP_THRESHOLD = int(os.getenv("GAP_THRESHOLD", "180"))
 DOWN_THRESHOLD = int(os.getenv("DOWN_THRESHOLD", "900"))
@@ -111,6 +112,19 @@ def descargar_json(s3, bucket: str, key: str) -> dict | None:
 # ---------------------------------------------------------------------------
 # Carga de dataset
 # ---------------------------------------------------------------------------
+
+
+@st.cache_data(ttl=DASHBOARD_REFRESH, show_spinner=False)
+def cargar_stats_hoy() -> dict | None:
+    """Lee el JSON de stats acumuladas que el pipeline escribe periódicamente a S3."""
+    s3 = s3_client()
+    hoy = _ahora_chile().strftime("%Y/%m/%d")
+    key = f"{STATS_PREFIX}/{hoy}/resumen.json"
+    try:
+        resp = s3.get_object(Bucket=S3_BUCKET, Key=key)
+        return json.loads(resp["Body"].read().decode("utf-8"))
+    except (BotoCoreError, ClientError):
+        return None
 
 
 @st.cache_data(ttl=DASHBOARD_REFRESH, show_spinner=False)
@@ -270,6 +284,7 @@ st.caption(
 
 with st.spinner("Cargando metadata del día desde S3..."):
     df = cargar_dataset_hoy()
+    stats_pipeline = cargar_stats_hoy()
 
 if df.empty:
     st.warning(
@@ -310,6 +325,37 @@ c3.metric(
 )
 c4.metric("Gaps detectados", len(gaps))
 c5.metric(f"Capturas últ. {VENTANA_RECIENTE_MIN} min", capturas_recientes)
+
+st.divider()
+
+# -- Estadísticas acumuladas del pipeline ------------------------------------
+
+st.subheader("Estadísticas del pipeline (acumuladas desde inicio del proceso)")
+
+if stats_pipeline:
+    periodo_inicio = stats_pipeline.get("periodo_inicio", "—")
+    periodo_fin = stats_pipeline.get("periodo_fin", "—")
+    uptime_pct = stats_pipeline.get("uptime_pct")
+    err_desc = stats_pipeline.get("errores_descarga", 0)
+    err_s3 = stats_pipeline.get("errores_s3", 0)
+    duplicadas = stats_pipeline.get("duplicadas_descartadas", 0)
+
+    st.caption(f"Período medido: **{periodo_inicio}** — **{periodo_fin}**")
+
+    sp1, sp2, sp3, sp4 = st.columns(4)
+    sp1.metric(
+        "Uptime del pipeline",
+        f"{uptime_pct:.1f} %" if uptime_pct is not None else "—",
+    )
+    sp2.metric("Errores de descarga", err_desc, delta=None)
+    sp3.metric("Errores S3", err_s3, delta=None)
+    sp4.metric("Capturas duplicadas descartadas", duplicadas)
+else:
+    st.info(
+        "Aún no hay archivo de stats para hoy. "
+        "Se genera automáticamente cada vez que el pipeline imprime métricas "
+        f"(cada {DASHBOARD_REFRESH // 60} min aprox.)."
+    )
 
 st.divider()
 

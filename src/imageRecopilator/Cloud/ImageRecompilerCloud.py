@@ -186,6 +186,7 @@ executor = ThreadPoolExecutor(max_workers=2)
 
 class Metricas:
     def __init__(self):
+        # Contadores periódicos: se resetean cada METRICAS_INTERVALO
         self.imagenes_capturadas = 0
         self.imagenes_subidas = 0
         self.imagenes_duplicadas = 0
@@ -196,6 +197,13 @@ class Metricas:
         self.ultima_impresion = time.time()
         self.lock = asyncio.Lock()
 
+        # Contadores acumulados desde inicio del proceso (para stats en S3)
+        self.inicio_proceso = datetime.now()
+        self.total_subidas = 0
+        self.total_duplicadas = 0
+        self.total_errores_descarga = 0
+        self.total_errores_s3 = 0
+
     async def registrar_captura(self):
         async with self.lock:
             self.imagenes_capturadas += 1
@@ -203,23 +211,29 @@ class Metricas:
     async def registrar_subida(self, bytes_orig, bytes_comp):
         async with self.lock:
             self.imagenes_subidas += 1
+            self.total_subidas += 1
             self.bytes_originales += bytes_orig
             self.bytes_comprimidos += bytes_comp
 
     async def registrar_duplicada(self):
         async with self.lock:
             self.imagenes_duplicadas += 1
+            self.total_duplicadas += 1
 
     async def registrar_error_descarga(self):
         async with self.lock:
             self.errores_descarga += 1
+            self.total_errores_descarga += 1
 
     async def registrar_error_s3(self):
         async with self.lock:
             self.errores_s3 += 1
+            self.total_errores_s3 += 1
 
     async def imprimir_si_toca(self):
         ahora = time.time()
+        stats_s3 = None
+
         async with self.lock:
             if ahora - self.ultima_impresion >= METRICAS_INTERVALO:
                 ahorro_pct = 0
@@ -234,6 +248,24 @@ class Metricas:
                 logger.info(f"  Cola: {cola_subida.qsize()}/{QUEUE_SIZE}")
                 logger.info("="*60)
 
+                # Construir snapshot acumulado para escribir a S3 fuera del lock
+                ahora_dt = datetime.now()
+                intentos = self.total_subidas + self.total_errores_descarga + self.total_errores_s3
+                uptime_pct = round(self.total_subidas / intentos * 100, 2) if intentos > 0 else 100.0
+                stats_s3 = {
+                    "version": "1",
+                    "periodo_inicio": self.inicio_proceso.isoformat(timespec="seconds"),
+                    "periodo_fin": ahora_dt.isoformat(timespec="seconds"),
+                    "timestamp_actualizacion": ahora_dt.isoformat(timespec="seconds"),
+                    "uptime_pct": uptime_pct,
+                    "errores_descarga": self.total_errores_descarga,
+                    "errores_s3": self.total_errores_s3,
+                    "duplicadas_descartadas": self.total_duplicadas,
+                    "total_subidas": self.total_subidas,
+                    "intervalo_s": INTERVALO,
+                    "instancia_ec2": _ec2_metadata_cache,
+                }
+
                 self.imagenes_capturadas = 0
                 self.imagenes_subidas = 0
                 self.imagenes_duplicadas = 0
@@ -242,6 +274,23 @@ class Metricas:
                 self.bytes_comprimidos = 0
                 self.bytes_originales = 0
                 self.ultima_impresion = ahora
+
+        if stats_s3 is not None:
+            try:
+                hoy = datetime.now().strftime("%Y/%m/%d")
+                key = f"{METADATA_PREFIX}/stats/{hoy}/resumen.json"
+                body = json.dumps(stats_s3, ensure_ascii=False).encode("utf-8")
+                session = aioboto3.Session()
+                async with session.client("s3") as s3:  # type: ignore[attr-defined]
+                    await s3.put_object(
+                        Bucket=S3_BUCKET,
+                        Key=key,
+                        Body=body,
+                        ContentType="application/json",
+                    )
+                logger.info(f"[S3] Stats escritas: {key}")
+            except Exception as exc:
+                logger.warning(f"[S3] No se pudo escribir stats: {exc}")
 
 metricas = Metricas()
 
