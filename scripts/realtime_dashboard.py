@@ -19,6 +19,7 @@ import json
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import boto3
 import pandas as pd
@@ -36,6 +37,15 @@ METADATA_PREFIX = os.getenv("METADATA_PREFIX", "metadata/capturas")
 DASHBOARD_REFRESH = int(os.getenv("DASHBOARD_REFRESH", "300"))
 GAP_THRESHOLD = int(os.getenv("GAP_THRESHOLD", "180"))
 DOWN_THRESHOLD = int(os.getenv("DOWN_THRESHOLD", "900"))
+VENTANA_RECIENTE_MIN = int(os.getenv("VENTANA_RECIENTE_MIN", "5"))
+
+CHILE_TZ = ZoneInfo("America/Santiago")
+
+
+def _ahora_chile() -> datetime:
+    """Hora actual en America/Santiago como datetime naive (mismo formato que los JSONs de S3)."""
+    return datetime.now(CHILE_TZ).replace(tzinfo=None)
+
 
 # Duplicado desde ImageRecompilerCloud.py: importar ese módulo arranca
 # aioboto3, signal handlers y un ThreadPoolExecutor al top-level.
@@ -78,7 +88,7 @@ def s3_client():
 
 
 def listar_keys_hoy(s3, bucket: str, prefix: str) -> list[str]:
-    hoy = datetime.now().strftime("%Y/%m/%d")
+    hoy = _ahora_chile().strftime("%Y/%m/%d")
     full_prefix = f"{prefix}/{hoy}/"
     keys: list[str] = []
     paginator = s3.get_paginator("list_objects_v2")
@@ -171,7 +181,8 @@ def _dentro_horario(planta: str, ahora: datetime) -> bool:
 
 
 def tabla_estado_plantas(df: pd.DataFrame) -> pd.DataFrame:
-    ahora = datetime.now()
+    ahora = _ahora_chile()
+    corte = ahora - timedelta(minutes=VENTANA_RECIENTE_MIN)
     filas: list[dict] = []
 
     for nombre, pid in DENOMINADORES.items():
@@ -185,18 +196,21 @@ def tabla_estado_plantas(df: pd.DataFrame) -> pd.DataFrame:
                 "Última captura": "—",
                 "Hace (min)": None,
                 "Capturas hoy": 0,
+                f"Últ. {VENTANA_RECIENTE_MIN} min": 0,
                 "Estado": _status_planta(None, en_horario),
             })
             continue
 
         ultima = sub["timestamp_captura"].max()
         delta = (ahora - ultima.to_pydatetime()).total_seconds()
+        recientes = int((sub["timestamp_captura"] >= corte).sum())
         filas.append({
             "Planta": nombre,
             "ID": pid,
             "Última captura": ultima.strftime("%H:%M:%S"),
             "Hace (min)": round(delta / 60, 1),
             "Capturas hoy": int(len(sub)),
+            f"Últ. {VENTANA_RECIENTE_MIN} min": recientes,
             "Estado": _status_planta(delta, en_horario),
         })
 
@@ -232,10 +246,26 @@ def gaps_por_planta(df: pd.DataFrame) -> pd.DataFrame:
 
 st.set_page_config(page_title="FlujoPRT · Live", layout="wide", page_icon="📸")
 
+# -- Sidebar -----------------------------------------------------------------
+
+with st.sidebar:
+    st.header("Controles")
+
+    if st.button("Forzar recarga", use_container_width=True):
+        cargar_dataset_hoy.clear()
+        st.rerun()
+
+    st.divider()
+    st.caption(f"Hora Santiago: **{_ahora_chile().strftime('%H:%M:%S')}**")
+    st.caption(f"Próximo auto-refresh: {DASHBOARD_REFRESH}s")
+    st.caption(f"Umbral GAP: {GAP_THRESHOLD}s · DOWN: {DOWN_THRESHOLD}s")
+
+# -- Título ------------------------------------------------------------------
+
 st.title("FlujoPRT — Monitoreo en tiempo real")
 st.caption(
     f"Bucket: `{S3_BUCKET}` · Prefix: `{METADATA_PREFIX}` · "
-    f"Refresh: {DASHBOARD_REFRESH}s · Hora servidor: {datetime.now().strftime('%H:%M:%S')}"
+    f"Refresh: {DASHBOARD_REFRESH}s · Santiago: {_ahora_chile().strftime('%H:%M:%S')}"
 )
 
 with st.spinner("Cargando metadata del día desde S3..."):
@@ -248,6 +278,13 @@ if df.empty:
     )
     st.stop()
 
+# Mostrar instancia EC2 en sidebar si está disponible
+inst_ids = df["instance_id"].dropna().unique()
+if len(inst_ids):
+    with st.sidebar:
+        st.divider()
+        st.caption(f"EC2: `{inst_ids[0]}`")
+
 # -- Header con KPIs globales ------------------------------------------------
 
 tabla = tabla_estado_plantas(df)
@@ -259,8 +296,10 @@ ahorro_pct = (
     (mb_orig_total - mb_comp_total) / mb_orig_total * 100 if mb_orig_total > 0 else 0
 )
 gaps = gaps_por_planta(df)
+col_recientes = f"Últ. {VENTANA_RECIENTE_MIN} min"
+capturas_recientes = int(tabla[col_recientes].sum())
 
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Plantas OK", f"{activas} / {total_plantas}")
 c2.metric("Capturas hoy", f"{len(df):,}")
 c3.metric(
@@ -270,6 +309,7 @@ c3.metric(
     delta_color="inverse",
 )
 c4.metric("Gaps detectados", len(gaps))
+c5.metric(f"Capturas últ. {VENTANA_RECIENTE_MIN} min", capturas_recientes)
 
 st.divider()
 
@@ -277,7 +317,8 @@ st.divider()
 
 st.subheader("1 · Estado operacional por planta")
 
-def _color_estado(val: str) -> str:
+
+def _color_estado(val: object) -> str:
     colores = {
         "OK": "background-color: #1f7a3a; color: white",
         "GAP": "background-color: #b8860b; color: white",
@@ -285,10 +326,20 @@ def _color_estado(val: str) -> str:
         "FUERA DE HORARIO": "background-color: #444; color: #ccc",
         "SIN DATOS": "background-color: #222; color: #888",
     }
-    return colores.get(val, "")
+    return colores.get(str(val), "")
+
+
+def _color_recientes(val: object) -> str:
+    try:
+        return "background-color: #1f7a3a; color: white" if int(val) > 0 else "background-color: #333; color: #888"  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return ""
+
 
 st.dataframe(
-    tabla.style.map(_color_estado, subset=["Estado"]),
+    tabla.style
+        .map(_color_estado, subset=["Estado"])
+        .map(_color_recientes, subset=[col_recientes]),
     use_container_width=True,
     hide_index=True,
 )
@@ -305,13 +356,15 @@ df_vol = (
       .sum()
 )
 
-fig_vol = px.area(
+fig_vol = px.bar(
     df_vol,
     x="hora_bin",
     y="mb_comprimidos",
     color="planta_nombre",
+    barmode="stack",
     labels={"hora_bin": "Hora", "mb_comprimidos": "MB subidos", "planta_nombre": "Planta"},
 )
+fig_vol.update_xaxes(tickformat="%H:%M")
 fig_vol.update_layout(height=380, legend_title=None)
 st.plotly_chart(fig_vol, use_container_width=True)
 
@@ -398,8 +451,6 @@ if not gaps.empty:
 # ---------------------------------------------------------------------------
 # Auto-refresh: al terminar de renderizar, dormir y re-ejecutar el script.
 # ---------------------------------------------------------------------------
-
-st.caption(f"Próximo refresh en {DASHBOARD_REFRESH}s")
 
 import time  # noqa: E402 — import tardío intencional, solo para el sleep final
 time.sleep(DASHBOARD_REFRESH)
