@@ -1,0 +1,12 @@
+2026-04-25 16:07:04 [ERROR] Carpeta no encontrada: c:\Users\Laptop\Desktop\Trabajos\ProyectosPersonales\FlujoPRT_Main\FlujoPRT\Capturas\2026\02
+2026-04-25 16:07:08 [ERROR] Carpeta no encontrada: c:\Users\Laptop\Desktop\Trabajos\ProyectosPersonales\FlujoPRT_Main\FlujoPRT\Capturas\2026\02
+2026-04-25 16:07:41 [ERROR] Carpeta no encontrada: c:\Users\Laptop\Desktop\Trabajos\ProyectosPersonales\FlujoPRT_Main\FlujoPRT\Capturas\2026\02
+2026-04-25 16:08:34 [ERROR] Carpeta no encontrada: c:\Users\Laptop\Desktop\Trabajos\ProyectosPersonales\FlujoPRT_Main\FlujoPRT\Capturas\2026\02
+2026-04-25 16:09:55 [ERROR] Carpeta no encontrada: c:\Users\Laptop\Desktop\Trabajos\ProyectosPersonales\FlujoPRT_Main\FlujoPRT\Capturas\2026\02
+2026-04-25 16:10:07 [ERROR] Carpeta no encontrada: c:\Users\Laptop\Desktop\Trabajos\ProyectosPersonales\FlujoPRT_Main\FlujoPRT\Capturas\2026\02
+2026-04-25 16:12:59 [INFO] Cargando modelo YOLOv8...
+2026-04-25 16:13:00 [INFO] Buscando imagenes en: c:\Users\Laptop\Desktop\Trabajos\ProyectosPersonales\FlujoPRT_Main\Capturas
+2026-04-25 16:13:00 [INFO] Imagenes encontradas: 35618
+2026-04-25 16:13:00 [INFO] Escribiendo log en: c:\Users\Laptop\Desktop\Trabajos\ProyectosPersonales\FlujoPRT_Main\FlujoPRT\scripts\VehicleRecognition\logs\registro_vehicular.jsonl
+2026-04-25 16:13:04 [WARNING] Error en CHL_20260203_070147.jpg: OpenCV(4.13.0) D:\a\opencv-python\opencv-python\opencv\modules\imgcodecs\src\loadsave.cpp:1310: error: (-215:Assertion failed) !buf.empty() in function 'cv::imdecode_'
+

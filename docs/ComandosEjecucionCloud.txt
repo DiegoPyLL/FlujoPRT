@@ -120,4 +120,4 @@ DESCARGA DE archivos DESDE AWS CLI
 
 aws s3 sync s3://flujo-prt-imagenes/capturas/ "Direccion destino" --exact-timestamps --no-progress
 
-aws s3 sync s3://flujo-prt-imagenes/capturas/ ""D:\Trabajos\ProyectosPersonales\FlujoPRT_main\capturas"" --exact-timestamps --no-progress
+aws s3 sync s3://flujo-prt-imagenes/capturas/ "C:\Users\Laptop\Desktop\Trabajos\ProyectosPersonales\FlujoPRT_Main\Capturas" --exact-timestamps --no-progress

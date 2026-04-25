@@ -10,6 +10,8 @@ Guia paso a paso para levantar el sistema completo (captura + S3 + dashboard) en
 - Cliente AWS CLI instalado en tu maquina local (`aws --version`)
 - Git instalado localmente
 
+pip install -r deploy/requirements.txt
+
 ---
 
 ## 1. Configuracion IAM

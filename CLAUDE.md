@@ -28,7 +28,8 @@ docs/
   ComandosEjecucionCloud.txt      # Guía de comandos operativos
   DEPLOY_AWS.md                   # Guia de despliegue en AWS e IAM
 deploy/
-  requirements.txt                # Dependencias Python del runtime
+  requirements.cloud.txt          # Dependencias Python para EC2/Linux (incluye uvloop)
+  requirements.local.txt          # Dependencias Python para desarrollo local/Windows (sin uvloop)
   run.sh                          # Script de ejecución en EC2
 scripts/
   realtime_dashboard.py           # Dashboard Streamlit (read-only sobre S3)
@@ -61,8 +62,9 @@ Nota: `MetadataIngestor.py` fue fusionado dentro de `ImageRecompilerCloud.py` (c
 ### Dependencias
 
 ```bash
-pip install -r deploy/requirements.txt   # runtime
-pip install -r scripts/requirements.txt  # dashboard
+pip install -r deploy/requirements.cloud.txt  # runtime en EC2/Linux
+pip install -r deploy/requirements.local.txt  # runtime en desarrollo local/Windows
+pip install -r scripts/requirements.txt       # dashboard
 ```
 
 ### Tests

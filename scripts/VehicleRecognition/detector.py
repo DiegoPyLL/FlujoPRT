@@ -10,10 +10,10 @@ from ultralytics import YOLO
 # Subconjunto de clases COCO relevantes para vehiculos
 CLASES_VEHICULO = {2: "auto", 3: "moto", 5: "bus", 7: "camion"}
 
-UMBRAL_CONFIANZA = 0.4
+UMBRAL_CONFIANZA = 0.55
 
 
-def cargar_modelo(ruta_pesos="yolov8s.pt") -> YOLO:
+def cargar_modelo(ruta_pesos="yolov8m.pt") -> YOLO:
     """
     Carga el modelo YOLO desde disco o lo descarga si no existe.
 
@@ -52,36 +52,3 @@ def detectar_vehiculos(modelo: YOLO, imagen_path: str) -> list[dict]:
                     "confianza": float(box.conf),
                 })
     return detecciones
-
-
-def main():
-    """Prueba rapida de deteccion sobre las imagenes de ejemplo."""
-    import os
-
-    modelo = cargar_modelo()
-
-    imagenes_prueba = [
-        "./car_img/car_1.png",
-        "./car_img/car_2.png",
-        "./car_img/car_3.png",
-    ]
-
-    for imagen_path in imagenes_prueba:
-        if not os.path.exists(imagen_path):
-            print(f"Imagen no encontrada: {imagen_path}")
-            continue
-
-        print(f"\nProcesando: {imagen_path}")
-        detecciones = detectar_vehiculos(modelo, imagen_path)
-
-        if not detecciones:
-            print("  Sin vehiculos detectados.")
-        else:
-            print(f"  {len(detecciones)} vehiculo(s) detectado(s):")
-            for i, d in enumerate(detecciones, 1):
-                x1, y1, x2, y2 = [round(v) for v in d["bbox"]]
-                print(f"  [{i}] {d['tipo']} | confianza: {d['confianza']:.2f} | bbox: ({x1},{y1})-({x2},{y2})")
-
-
-if __name__ == "__main__":
-    main()
