@@ -21,9 +21,11 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 LOG_DIR = os.path.join(os.path.dirname(__file__), "..", "logs")
+# Base para resolver rutas relativas almacenadas en el JSONL
+BASE_RELATIVA = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 LOG_JSONL_DEFAULT = os.path.join(LOG_DIR, "registro_vehicular_2026_02.jsonl")
 
-DESTINO_DEFAULT = r"C:\Users\Laptop\Desktop\Trabajos\ProyectosPersonales\FlujoPRT_Main\Resultados Captura"
+DESTINO_DEFAULT = str(Path(__file__).parents[3] / "Resultados Captura")
 
 # Color por tipo de vehiculo (RGB)
 COLOR_TIPO = {
@@ -153,8 +155,14 @@ def main():
             omitidas += 1
             continue
 
-        ruta = reg.get("ruta_absoluta", "")
-        if not ruta or not os.path.isfile(ruta):
+        ruta_raw = reg.get("ruta_absoluta", "")
+        if not ruta_raw:
+            log.warning("Imagen no disponible, eliminando del JSONL: (sin ruta)")
+            omitidas += 1
+            continue
+        ruta = ruta_raw if os.path.isabs(ruta_raw) else os.path.join(BASE_RELATIVA, ruta_raw)
+        ruta = os.path.normpath(ruta)
+        if not os.path.isfile(ruta):
             log.warning("Imagen no disponible, eliminando del JSONL: %s", ruta or "(sin ruta)")
             omitidas += 1
             continue
@@ -177,6 +185,8 @@ def main():
     with open(jsonl_path, "w", encoding="utf-8") as f:
         for reg in registros_validos:
             f.write(json.dumps(reg, ensure_ascii=False) + "\n")
+
+    os.makedirs(args.destino, exist_ok=True)
 
     log.info("=" * 50)
     log.info("Completado")

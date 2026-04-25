@@ -30,6 +30,8 @@ CARPETA_CAPTURAS = os.path.join(
     os.path.dirname(__file__),
     "..", "..", "..", "Capturas"
 )
+# Base para rutas relativas: directorio padre de FlujoPRT_main
+BASE_RELATIVA = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 LOG_JSONL_DEFAULT = os.path.join(LOG_DIR, "registro_vehicular.jsonl")
 LOG_TEXTO = os.path.join(LOG_DIR, "validate_vehiculos.log")
@@ -103,7 +105,7 @@ def procesar_imagen(modelo, ruta: str) -> dict:
     ancho, alto = dimensiones_imagen(ruta)
     registro = {
         "archivo": nombre,
-        "ruta_absoluta": os.path.abspath(ruta).replace("\\", "/"),
+        "ruta_absoluta": os.path.relpath(os.path.abspath(ruta), BASE_RELATIVA).replace("\\", "/"),
         **meta,
         "bytes_archivo": os.path.getsize(ruta),
         "ancho_px": ancho,

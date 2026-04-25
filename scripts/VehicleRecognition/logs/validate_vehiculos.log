@@ -10,3 +10,44 @@
 2026-04-25 16:13:00 [INFO] Escribiendo log en: c:\Users\Laptop\Desktop\Trabajos\ProyectosPersonales\FlujoPRT_Main\FlujoPRT\scripts\VehicleRecognition\logs\registro_vehicular.jsonl
 2026-04-25 16:13:04 [WARNING] Error en CHL_20260203_070147.jpg: OpenCV(4.13.0) D:\a\opencv-python\opencv-python\opencv\modules\imgcodecs\src\loadsave.cpp:1310: error: (-215:Assertion failed) !buf.empty() in function 'cv::imdecode_'
 
+2026-04-25 18:30:24 [INFO] Cargando modelo YOLOv8...
+2026-04-25 18:30:24 [INFO] Buscando imagenes en: d:\Trabajos\ProyectosPersonales\FlujoPRT_main\Capturas
+2026-04-25 18:30:31 [INFO] Imagenes encontradas: 41080
+2026-04-25 18:30:31 [INFO] Escribiendo log en: d:\Trabajos\ProyectosPersonales\FlujoPRT_main\FlujoPRT\scripts\VehicleRecognition\logs\registro_vehicular.jsonl
+2026-04-25 18:30:39 [WARNING] Error en CHL_20260203_070147.jpg: OpenCV(4.13.0) D:\a\opencv-python\opencv-python\opencv\modules\imgcodecs\src\loadsave.cpp:1310: error: (-215:Assertion failed) !buf.empty() in function 'cv::imdecode_'
+
+2026-04-25 18:32:07 [WARNING] Error en CHL_20260203_154129.jpg: need at least one array to stack
+2026-04-25 18:32:50 [WARNING] Error en CCP_20260203_100544.jpg: OpenCV(4.13.0) D:\a\opencv-python\opencv-python\opencv\modules\imgcodecs\src\loadsave.cpp:1310: error: (-215:Assertion failed) !buf.empty() in function 'cv::imdecode_'
+
+2026-04-25 18:35:22 [WARNING] Error en HCH_20260203_110534.jpg: OpenCV(4.13.0) D:\a\opencv-python\opencv-python\opencv\modules\imgcodecs\src\loadsave.cpp:1310: error: (-215:Assertion failed) !buf.empty() in function 'cv::imdecode_'
+
+2026-04-25 18:38:38 [INFO] Cargando modelo YOLOv8...
+2026-04-25 18:38:38 [INFO] Buscando imagenes en: d:\Trabajos\ProyectosPersonales\FlujoPRT_main\Capturas
+2026-04-25 18:38:38 [INFO] Imagenes encontradas: 41080
+2026-04-25 18:38:38 [INFO] Escribiendo log en: d:\Trabajos\ProyectosPersonales\FlujoPRT_main\FlujoPRT\scripts\VehicleRecognition\logs\registro_vehicular.jsonl
+2026-04-25 18:38:40 [WARNING] Error en CHL_20260203_070147.jpg: OpenCV(4.13.0) D:\a\opencv-python\opencv-python\opencv\modules\imgcodecs\src\loadsave.cpp:1310: error: (-215:Assertion failed) !buf.empty() in function 'cv::imdecode_'
+
+2026-04-25 18:40:05 [WARNING] Error en CHL_20260203_154129.jpg: need at least one array to stack
+2026-04-25 18:40:45 [WARNING] Error en CCP_20260203_100544.jpg: OpenCV(4.13.0) D:\a\opencv-python\opencv-python\opencv\modules\imgcodecs\src\loadsave.cpp:1310: error: (-215:Assertion failed) !buf.empty() in function 'cv::imdecode_'
+
+2026-04-25 18:43:06 [WARNING] Error en HCH_20260203_110534.jpg: OpenCV(4.13.0) D:\a\opencv-python\opencv-python\opencv\modules\imgcodecs\src\loadsave.cpp:1310: error: (-215:Assertion failed) !buf.empty() in function 'cv::imdecode_'
+
+2026-04-25 18:44:15 [WARNING] Error en LFL_20260203_083009.jpg: OpenCV(4.13.0) D:\a\opencv-python\opencv-python\opencv\modules\imgcodecs\src\loadsave.cpp:1310: error: (-215:Assertion failed) !buf.empty() in function 'cv::imdecode_'
+
+2026-04-25 18:46:11 [WARNING] Error en LPT_20260203_100520.jpg: OpenCV(4.13.0) D:\a\opencv-python\opencv-python\opencv\modules\imgcodecs\src\loadsave.cpp:1310: error: (-215:Assertion failed) !buf.empty() in function 'cv::imdecode_'
+
+2026-04-25 18:48:34 [WARNING] Error en PUD_20260203_144102.jpg: OpenCV(4.13.0) D:\a\opencv-python\opencv-python\opencv\modules\imgcodecs\src\loadsave.cpp:1310: error: (-215:Assertion failed) !buf.empty() in function 'cv::imdecode_'
+
+2026-04-25 18:49:35 [WARNING] Error en QLC_20260203_102630.jpg: OpenCV(4.13.0) D:\a\opencv-python\opencv-python\opencv\modules\imgcodecs\src\loadsave.cpp:1310: error: (-215:Assertion failed) !buf.empty() in function 'cv::imdecode_'
+
+2026-04-25 18:51:28 [WARNING] Error en RCL_20260203_121835.jpg: OpenCV(4.13.0) D:\a\opencv-python\opencv-python\opencv\modules\imgcodecs\src\loadsave.cpp:1310: error: (-215:Assertion failed) !buf.empty() in function 'cv::imdecode_'
+
+2026-04-25 18:53:11 [WARNING] Error en SPP_20260203_085759.jpg: OpenCV(4.13.0) D:\a\opencv-python\opencv-python\opencv\modules\imgcodecs\src\loadsave.cpp:1310: error: (-215:Assertion failed) !buf.empty() in function 'cv::imdecode_'
+
+2026-04-25 18:54:48 [WARNING] Error en TMU_20260203_092509.jpg: need at least one array to stack
+2026-04-25 18:54:53 [WARNING] Error en TMU_20260203_095512.jpg: OpenCV(4.13.0) D:\a\opencv-python\opencv-python\opencv\modules\imgcodecs\src\loadsave.cpp:1310: error: (-215:Assertion failed) !buf.empty() in function 'cv::imdecode_'
+
+2026-04-25 18:56:29 [WARNING] Error en VLL_20260203_075939.jpg: OpenCV(4.13.0) D:\a\opencv-python\opencv-python\opencv\modules\imgcodecs\src\loadsave.cpp:1310: error: (-215:Assertion failed) !buf.empty() in function 'cv::imdecode_'
+
+2026-04-25 18:58:37 [WARNING] Error en YMB_20260203_101626.jpg: OpenCV(4.13.0) D:\a\opencv-python\opencv-python\opencv\modules\imgcodecs\src\loadsave.cpp:1310: error: (-215:Assertion failed) !buf.empty() in function 'cv::imdecode_'
+

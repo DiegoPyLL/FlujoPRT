@@ -2,7 +2,7 @@
 Deteccion de vehiculos en imagenes CCTV usando YOLOv8
 
 Detecta multiples vehiculos en una imagen y retorna bounding boxes con tipo y confianza.
-El modelo yolov8s.pt se descarga automaticamente la primera vez (~22 MB).
+El modelo yolov8m.pt se descarga automaticamente la primera vez (~22 MB).
 """
 
 from ultralytics import YOLO
