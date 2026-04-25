@@ -55,7 +55,7 @@ FlujoPRT/
 │   └── plantas_revision_tecnica.xlsx
 ├── docs/
 │   ├── ComandosEjecucionCloud.txt        # Guia de comandos
-│   └── PERMISOS_S3.md                    # Politicas IAM necesarias
+│   └── DEPLOY_AWS.md                     # Guia de despliegue en AWS e IAM
 ├── deploy/
 │   ├── requirements.txt                  # Dependencias Python del runtime
 │   └── run.sh                            # Script de ejecucion en EC2

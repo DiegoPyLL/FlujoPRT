@@ -118,5 +118,5 @@ asegurarse de crear el ec2 y s3 en la misma region
 
 DESCARGA DE archivos DESDE AWS CLI
 
-aws s3 sync s3://flujo-prt-imagenes/capturas/ "D:\Trabajos\Proyectos Personales\FlujoPRT_main\capturas" --exact-timestamps --no-progress
+aws s3 sync s3://flujo-prt-imagenes/capturas/ "Direccion destino" --exact-timestamps --no-progress
 

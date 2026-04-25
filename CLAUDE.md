@@ -26,7 +26,7 @@ data/
   plantas_revision_tecnica.csv    # Fuente de datos: 116 plantas
 docs/
   ComandosEjecucionCloud.txt      # Guía de comandos operativos
-  PERMISOS_S3.md                  # Políticas IAM mínimas
+  DEPLOY_AWS.md                   # Guia de despliegue en AWS e IAM
 deploy/
   requirements.txt                # Dependencias Python del runtime
   run.sh                          # Script de ejecución en EC2
@@ -88,7 +88,7 @@ Requiere credenciales AWS configuradas (`aws configure` o variables de entorno) 
 - Bucket: `flujo-prt-imagenes` (us-east-1).
 - Prefijos: `capturas/YYYY/MM/DD/<Planta>/` para JPEGs; `metadata/capturas/...` espeja la ruta con `.json`; `metadata/plantas/catalogo_plantas.json` para el catálogo.
 - StorageClass: `INTELLIGENT_TIERING`.
-- Políticas IAM mínimas documentadas en [docs/PERMISOS_S3.md](docs/PERMISOS_S3.md).
+- Políticas IAM y guía de despliegue documentadas en [docs/DEPLOY_AWS.md](docs/DEPLOY_AWS.md).
 
 **No tocar producción desde Claude sin confirmación explícita**: no ejecutar `aws s3 rm`, borrar objetos, modificar políticas IAM, ni lanzar capturas contra S3 real. Verificar bucket/prefijo antes de cualquier comando `aws s3`.
 
@@ -124,5 +124,5 @@ Requiere credenciales AWS configuradas (`aws configure` o variables de entorno) 
 
 - Arquitectura del pipeline: [README.md](README.md#arquitectura-del-pipeline)
 - Comandos de ejecución EC2: [docs/ComandosEjecucionCloud.txt](docs/ComandosEjecucionCloud.txt)
-- Permisos IAM: [docs/PERMISOS_S3.md](docs/PERMISOS_S3.md)
+- Despliegue AWS e IAM: [docs/DEPLOY_AWS.md](docs/DEPLOY_AWS.md)
 - Dashboard en vivo: `streamlit run scripts/realtime_dashboard.py --server.address 127.0.0.1`
