@@ -13,7 +13,7 @@ from torchvision import transforms
 import cv2 as cv
 
 os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
-from model import resnet34
+from scripts.VehicleRecognition.model import resnet34
 from PIL import Image, ImageDraw, ImageFont
 
 data_transform = transforms.Compose([

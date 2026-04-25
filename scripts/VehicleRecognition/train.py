@@ -14,7 +14,7 @@ import torch.optim as optim
 from torchvision import transforms, datasets
 from tqdm import tqdm
 
-from model import resnet34
+from scripts.VehicleRecognition.model import resnet34
 
 
 def get_data_transform():

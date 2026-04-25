@@ -1,4 +1,0 @@
-numpy
-opencv-python
-torch
-ultralytics>=8.0

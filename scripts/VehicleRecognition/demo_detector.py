@@ -13,7 +13,7 @@ import sys
 import os
 import cv2
 import numpy as np
-from detector import cargar_modelo, detectar_vehiculos
+from scripts.VehicleRecognition.detector import cargar_modelo, detectar_vehiculos
 
 # Colores por tipo de vehiculo (BGR)
 COLORES = {
