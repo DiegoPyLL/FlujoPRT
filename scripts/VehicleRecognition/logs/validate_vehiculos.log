@@ -51,3 +51,9 @@
 
 2026-04-25 18:58:37 [WARNING] Error en YMB_20260203_101626.jpg: OpenCV(4.13.0) D:\a\opencv-python\opencv-python\opencv\modules\imgcodecs\src\loadsave.cpp:1310: error: (-215:Assertion failed) !buf.empty() in function 'cv::imdecode_'
 
+2026-04-25 19:00:30 [WARNING] Error en YGY_20260203_105642.jpg: OpenCV(4.13.0) D:\a\opencv-python\opencv-python\opencv\modules\imgcodecs\src\loadsave.cpp:1310: error: (-215:Assertion failed) !buf.empty() in function 'cv::imdecode_'
+
+2026-04-25 19:01:47 [WARNING] Error en CHL_20260204_075342.jpg: need at least one array to stack
+2026-04-25 19:04:46 [WARNING] Error en CCP_20260204_162927.jpg: need at least one array to stack
+2026-04-25 19:15:51 [WARNING] Error en SJQ_20260204_101050.jpg: OpenCV(4.13.0) D:\a\opencv-python\opencv-python\opencv\modules\imgcodecs\src\loadsave.cpp:1310: error: (-215:Assertion failed) !buf.empty() in function 'cv::imdecode_'
+

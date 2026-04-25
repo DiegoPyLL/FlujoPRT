@@ -6,9 +6,9 @@ Dibuja bounding boxes sobre las imagenes usando los registros del JSONL.
 - Elimina del JSONL las entradas cuya imagen no exista en disco.
 
 Uso:
-    python scripts/draw_bboxes.py
-    python scripts/draw_bboxes.py --jsonl scripts/logs/registro_vehicular_2026_02.jsonl
-    python scripts/draw_bboxes.py --jsonl ... --confianza-min 0.5 --destino /ruta/salida
+    python scripts/VehicleRecognition/draw_bboxes.py
+    python scripts/VehicleRecognition/draw_bboxes.py --jsonl scripts/VehicleRecognition/logs/registro_vehicular.jsonl
+    python scripts/VehicleRecognition/draw_bboxes.py --jsonl ... --confianza-min 0.5 --destino /ruta/salida
 """
 
 import argparse
@@ -20,10 +20,10 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-LOG_DIR = os.path.join(os.path.dirname(__file__), "..", "logs")
+LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 # Base para resolver rutas relativas almacenadas en el JSONL
 BASE_RELATIVA = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
-LOG_JSONL_DEFAULT = os.path.join(LOG_DIR, "registro_vehicular_2026_02.jsonl")
+LOG_JSONL_DEFAULT = os.path.join(LOG_DIR, "registro_vehicular.jsonl")
 
 DESTINO_DEFAULT = str(Path(__file__).parents[3] / "Resultados Captura")
 
