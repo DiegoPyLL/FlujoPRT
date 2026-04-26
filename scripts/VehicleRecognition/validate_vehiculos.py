@@ -1,23 +1,28 @@
 """
-Validacion y registro vehicular de capturas locales.
+Validacion y registro vehicular de capturas en S3.
 
-Recorre la carpeta de capturas, detecta vehiculos en cada imagen con YOLOv8
+Recorre el prefijo S3 indicado, detecta vehiculos en cada imagen con YOLOv8
 y escribe un log JSONL con metadata + conteos por tipo.
 
 Uso:
     python scripts/VehicleRecognition/validate_vehiculos.py
-    python scripts/VehicleRecognition/validate_vehiculos.py --carpeta /ruta/alternativa --salida /ruta/salida.jsonl
+    python scripts/VehicleRecognition/validate_vehiculos.py --prefijo capturas/2026/ --salida /ruta/salida.jsonl
+    python scripts/VehicleRecognition/validate_vehiculos.py --bucket otro-bucket --prefijo capturas/2025/04/
 """
 
 import argparse
+import io
 import json
 import logging
 import os
 import re
 import sys
+import tempfile
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 from PIL import Image
 from tqdm import tqdm
 
@@ -26,12 +31,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 from detector import cargar_modelo, detectar_vehiculos  # noqa: E402
 
 # --- Configuracion por defecto ---
-CARPETA_CAPTURAS = os.path.join(
-    os.path.dirname(__file__),
-    "..", "..", "..", "Capturas"
-)
-# Base para rutas relativas: directorio padre de FlujoPRT_main
-BASE_RELATIVA = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+S3_BUCKET = os.getenv("S3_BUCKET", "flujo-prt-imagenes")
+S3_PREFIJO = os.getenv("S3_PREFIJO", "capturas/2026/")
 LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
 LOG_JSONL_DEFAULT = os.path.join(LOG_DIR, "registro_vehicular.jsonl")
 LOG_TEXTO = os.path.join(LOG_DIR, "validate_vehiculos.log")
@@ -57,14 +58,18 @@ def configurar_logger() -> logging.Logger:
     return logger
 
 
-def recolectar_imagenes(carpeta: str) -> list[str]:
-    """Recorre recursivamente la carpeta y retorna rutas de imagenes validas."""
-    rutas = []
-    for raiz, _, archivos in os.walk(carpeta):
-        for nombre in sorted(archivos):
+def listar_objetos_s3(s3_client, bucket: str, prefijo: str) -> list[dict]:
+    """Lista todos los objetos JPG bajo el prefijo S3 que coincidan con el patron."""
+    objetos = []
+    paginator = s3_client.get_paginator("list_objects_v2")
+    for pagina in paginator.paginate(Bucket=bucket, Prefix=prefijo):
+        for obj in pagina.get("Contents", []):
+            clave = obj["Key"]
+            nombre = clave.rsplit("/", 1)[-1]
             if PATRON_ARCHIVO.match(nombre):
-                rutas.append(os.path.join(raiz, nombre))
-    return rutas
+                objetos.append({"clave": clave, "tamano": obj["Size"]})
+    objetos.sort(key=lambda o: o["clave"])
+    return objetos
 
 
 def parsear_nombre(nombre: str) -> dict:
@@ -79,11 +84,10 @@ def parsear_nombre(nombre: str) -> dict:
     return {"planta_codigo": codigo.upper(), "fecha": fecha, "hora": hora, "timestamp_imagen": timestamp}
 
 
-def dimensiones_imagen(ruta: str) -> tuple[int, int]:
-    """Retorna (ancho, alto) en pixeles. Devuelve (0, 0) si falla."""
+def dimensiones_desde_bytes(datos: bytes) -> tuple[int, int]:
     try:
-        with Image.open(ruta) as img:
-            return img.size  # (width, height)
+        with Image.open(io.BytesIO(datos)) as img:
+            return img.size
     except Exception:
         return 0, 0
 
@@ -98,38 +102,63 @@ def construir_conteo(detecciones: list[dict]) -> dict:
     return conteo
 
 
-def procesar_imagen(modelo, ruta: str) -> dict:
-    """Genera el registro JSONL para una imagen."""
-    nombre = os.path.basename(ruta)
+def procesar_objeto(modelo, s3_client, bucket: str, obj: dict) -> dict:
+    """Descarga el objeto S3 y genera el registro JSONL."""
+    clave = obj["clave"]
+    nombre = clave.rsplit("/", 1)[-1]
     meta = parsear_nombre(nombre)
-    ancho, alto = dimensiones_imagen(ruta)
+
     registro = {
         "archivo": nombre,
-        "ruta_absoluta": os.path.relpath(os.path.abspath(ruta), BASE_RELATIVA).replace("\\", "/"),
+        "s3_key": clave,
         **meta,
-        "bytes_archivo": os.path.getsize(ruta),
-        "ancho_px": ancho,
-        "alto_px": alto,
+        "bytes_archivo": obj["tamano"],
+        "ancho_px": 0,
+        "alto_px": 0,
         "conteo": {"auto": 0, "moto": 0, "bus": 0, "camion": 0, "total": 0},
         "detecciones": [],
         "procesado_en": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
         "error": None,
     }
+
     try:
-        detecciones = detectar_vehiculos(modelo, ruta)
-        registro["detecciones"] = detecciones
-        registro["conteo"] = construir_conteo(detecciones)
+        respuesta = s3_client.get_object(Bucket=bucket, Key=clave)
+        datos = respuesta["Body"].read()
+
+        ancho, alto = dimensiones_desde_bytes(datos)
+        registro["ancho_px"] = ancho
+        registro["alto_px"] = alto
+
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            tmp.write(datos)
+            ruta_tmp = tmp.name
+
+        try:
+            detecciones = detectar_vehiculos(modelo, ruta_tmp)
+            registro["detecciones"] = detecciones
+            registro["conteo"] = construir_conteo(detecciones)
+        finally:
+            os.unlink(ruta_tmp)
+
+    except (BotoCoreError, ClientError) as exc:
+        registro["error"] = f"S3: {exc}"
     except Exception as exc:
         registro["error"] = str(exc)
+
     return registro
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Registro vehicular de capturas locales")
+    parser = argparse.ArgumentParser(description="Registro vehicular de capturas en S3")
     parser.add_argument(
-        "--carpeta",
-        default=CARPETA_CAPTURAS,
-        help="Carpeta raiz de capturas a procesar",
+        "--bucket",
+        default=S3_BUCKET,
+        help="Nombre del bucket S3 (default: flujo-prt-imagenes)",
+    )
+    parser.add_argument(
+        "--prefijo",
+        default=S3_PREFIJO,
+        help="Prefijo S3 a recorrer (default: capturas/2026/)",
     )
     parser.add_argument(
         "--salida",
@@ -139,34 +168,34 @@ def main():
     args = parser.parse_args()
 
     logger = configurar_logger()
-    carpeta = os.path.normpath(args.carpeta)
     salida = os.path.normpath(args.salida)
-
-    if not os.path.isdir(carpeta):
-        logger.error("Carpeta no encontrada: %s", carpeta)
-        sys.exit(1)
-
     os.makedirs(os.path.dirname(salida), exist_ok=True)
 
-    logger.info("Cargando modelo YOLOv8...")
-    modelo = cargar_modelo()
+    s3 = boto3.client("s3")
 
-    logger.info("Buscando imagenes en: %s", carpeta)
-    imagenes = recolectar_imagenes(carpeta)
-    total = len(imagenes)
+    logger.info("Listando objetos en s3://%s/%s ...", args.bucket, args.prefijo)
+    try:
+        objetos = listar_objetos_s3(s3, args.bucket, args.prefijo)
+    except (BotoCoreError, ClientError) as exc:
+        logger.error("No se pudo listar S3: %s", exc)
+        sys.exit(1)
 
+    total = len(objetos)
     if total == 0:
-        logger.warning("No se encontraron imagenes con el patron esperado.")
+        logger.warning("No se encontraron imagenes con el patron esperado en el prefijo.")
         sys.exit(0)
 
     logger.info("Imagenes encontradas: %d", total)
+    logger.info("Cargando modelo YOLOv8...")
+    modelo = cargar_modelo()
+
     logger.info("Escribiendo log en: %s", salida)
 
     acum = {"auto": 0, "moto": 0, "bus": 0, "camion": 0, "total": 0, "errores": 0}
 
     with open(salida, "w", encoding="utf-8") as f_out:
-        for ruta in tqdm(imagenes, desc="Procesando", unit="img"):
-            registro = procesar_imagen(modelo, ruta)
+        for obj in tqdm(objetos, desc="Procesando", unit="img"):
+            registro = procesar_objeto(modelo, s3, args.bucket, obj)
             f_out.write(json.dumps(registro, ensure_ascii=False) + "\n")
 
             if registro["error"]:
