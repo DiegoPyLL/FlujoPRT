@@ -123,12 +123,20 @@ def planta_desde_clave(clave: str) -> str:
     return partes[3] if len(partes) > 3 else "desconocida"
 
 
-def fecha_desde_prefijo(prefijo: str) -> str:
-    """capturas/YYYY/MM/DD/ → 'YYYY/MM/DD'"""
+def fecha_desde_prefijo(prefijo: str) -> str | None:
+    """capturas/YYYY/MM/DD/ → 'YYYY/MM/DD'. None si el prefijo no incluye fecha completa."""
     partes = prefijo.strip("/").split("/")
     if len(partes) >= 4:
         return "/".join(partes[1:4])
-    raise ValueError(f"Prefijo inesperado: '{prefijo}'. Se esperaba capturas/YYYY/MM/DD/")
+    return None
+
+
+def fecha_desde_clave(clave: str) -> str:
+    """capturas/YYYY/MM/DD/Planta/img.jpg → 'YYYY/MM/DD'"""
+    partes = clave.split("/")
+    if len(partes) >= 4:
+        return "/".join(partes[1:4])
+    return "desconocida"
 
 
 def dimensiones_desde_bytes(datos: bytes) -> tuple[int, int]:
@@ -315,12 +323,6 @@ def main():
     logger = configurar_logger()
     s3 = boto3.client("s3")
 
-    try:
-        fecha_ymd = fecha_desde_prefijo(args.prefijo)
-    except ValueError as exc:
-        logger.error("%s", exc)
-        sys.exit(1)
-
     logger.info("Listando objetos en s3://%s/%s ...", args.bucket, args.prefijo)
     try:
         objetos = listar_objetos_s3(s3, args.bucket, args.prefijo)
@@ -333,20 +335,22 @@ def main():
         logger.warning("No se encontraron imagenes con el patron esperado en el prefijo.")
         sys.exit(0)
 
-    # Agrupar por planta usando el path S3 (más robusto que el regex del nombre)
-    por_planta: dict[str, list[dict]] = {}
+    # Agrupar por (fecha, planta) usando el path S3 para soportar prefijos parciales (año/mes)
+    por_fecha_planta: dict[tuple[str, str], list[dict]] = {}
     for obj in objetos:
         planta = planta_desde_clave(obj["clave"])
-        por_planta.setdefault(planta, []).append(obj)
+        fecha = fecha_desde_clave(obj["clave"])
+        por_fecha_planta.setdefault((fecha, planta), []).append(obj)
 
-    logger.info("Imagenes encontradas: %d en %d planta(s)", total, len(por_planta))
+    plantas_unicas = {p for _, p in por_fecha_planta}
+    logger.info("Imagenes encontradas: %d en %d planta(s)", total, len(plantas_unicas))
     logger.info("Cargando modelo YOLOv8...")
     modelo = cargar_modelo()
     logger.info("Anotadas → %s/  |  JSONL → %s/", S3_PREFIJO_ANOTADAS, S3_PREFIJO_JSONL)
 
     acum = {"auto": 0, "moto": 0, "bus": 0, "camion": 0, "total": 0, "errores": 0, "nuevas": 0, "saltadas": 0}
 
-    for planta, objs_planta in sorted(por_planta.items()):
+    for (fecha_ymd, planta), objs_planta in sorted(por_fecha_planta.items()):
         clave_jsonl = _clave_jsonl_planta(S3_PREFIJO_JSONL, fecha_ymd, planta)
         registros_previos, claves_previas = _cargar_jsonl_existente(s3, args.bucket, clave_jsonl)
 
@@ -389,7 +393,7 @@ def main():
 
     logger.info("=" * 50)
     logger.info("Procesamiento completado")
-    logger.info("  Plantas procesadas  : %d", len(por_planta))
+    logger.info("  Plantas procesadas  : %d", len(plantas_unicas))
     logger.info("  Imagenes nuevas     : %d", acum["nuevas"])
     logger.info("  Imagenes saltadas   : %d", acum["saltadas"])
     logger.info("  Errores             : %d", acum["errores"])

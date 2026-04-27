@@ -188,7 +188,7 @@ aws s3 ls | grep flujo-prt-imagenes
 1. EC2 → **Launch instance**
 2. **Name:** `FlujoPRT-CCTV`
 3. **AMI:** Ubuntu Server 22.04 LTS (64-bit x86)
-4. **Instance type:** `t2.small` (minimo recomendado; `t3.small` si hay disponibilidad)
+4. **Instance type:** `t2.large` (minimo recomendado; `t3.small` si hay disponibilidad)
 5. **Key pair:** crear o seleccionar un par de claves `.pem`
 6. **Security group:** crear nuevo con las siguientes reglas de entrada:| Tipo              | Puerto | Origen                 | Descripcion                    |
    | ----------------- | ------ | ---------------------- | ------------------------------ |

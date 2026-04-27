@@ -94,17 +94,16 @@ s3://flujo-prt-imagenes/
 └── metadata/                                  # Datos estructurados (JSON / JSONL)
     ├── plantas/
     │   └── catalogo_plantas.json              # Catalogo completo de 116 plantas
-    ├── capturas/                              # Metadata por captura (espeja ruta imagen)
+    ├── capturas/                              # Metadata por captura + JSONL vehicular
+    │   └── YYYY/MM/DD/NombrePlanta/
+    │       ├── DEN_YYYYMMDD_HHMMSS.json       # Metadata de cada imagen capturada
+    │       └── DEN_YYYYMMDD.jsonl             # Validacion vehicular diaria por planta
+    ├── detecciones/                           # Resultados YOLOv8 por imagen (analisis_historico)
     │   └── YYYY/MM/DD/NombrePlanta/
     │       └── DEN_YYYYMMDD_HHMMSS.json
-    ├── detecciones/                           # Resultados YOLOv8 por imagen
-    │   └── YYYY/MM/DD/NombrePlanta/
-    │       └── DEN_YYYYMMDD_HHMMSS.json
-    ├── validate_vehiculos/                    # Logs JSONL del validador
-    │   └── registro_vehicular_YYYYMMDD_HHMMSS.jsonl
-    └── analisis_historico/                    # Resumenes del analisis historico
-        ├── resumen_YYYYMMDD_HHMMSS.json
-        └── acciones_YYYYMMDD_HHMMSS.jsonl
+    └── stats/                                 # Metricas periodicas del proceso de captura
+        └── YYYY/MM/DD/
+            └── resumen.json
 ```
 
 Cada archivo de metadata de captura espeja la ruta de su imagen, reemplazando el prefijo `capturas/` por `metadata/capturas/` y la extension `.jpg` por `.json`. Los JSONs de deteccion usan el prefijo `metadata/detecciones/` con la misma estructura.
@@ -123,7 +122,7 @@ Cada archivo de metadata de captura espeja la ruta de su imagen, reemplazando el
 sudo apt update && sudo apt install python3-pip awscli
 git clone https://github.com/DiegoPyLL/FlujoPRT
 cd FlujoPRT
-pip install --user -r deploy/requirements.txt
+pip install --user -r deploy/requirements.cloud.txt
 ```
 
 ### En entorno local (desarrollo)
@@ -131,7 +130,7 @@ pip install --user -r deploy/requirements.txt
 ```bash
 git clone https://github.com/DiegoPyLL/FlujoPRT
 cd FlujoPRT
-pip install -r deploy/requirements.txt
+pip install -r deploy/requirements.local.txt
 ```
 
 ### Dependencias del runtime de captura
@@ -200,11 +199,12 @@ python3 src/imageRecopilator/Cloud/ImageRecompilerCloud.py
 ```
 
 Al ejecutarse:
-1. Verifica credenciales AWS (via STS)
+1. Verifica credenciales AWS (via STS) y consulta metadata de la instancia EC2 (IMDS v2)
 2. Ingesta el catalogo de plantas desde el CSV y lo sube a S3
 3. Lanza 14 tareas de captura en paralelo (una por camara)
 4. Lanza 2 workers S3 que suben imagenes y metadata simultaneamente
-5. Opera continuamente respetando los horarios de cada planta
+5. Lanza la tarea de validacion vehicular diaria (se dispara automaticamente 5 min tras el cierre de la ultima planta, lun-sab)
+6. Opera continuamente respetando los horarios de cada planta
 
 ### Subsistema de reconocimiento vehicular
 
@@ -357,6 +357,7 @@ Cada vez que una imagen se sube exitosamente a S3, el worker genera automaticame
   "bytes_originales": 85432,
   "bytes_comprimidos": 52000,
   "ratio_compresion": 0.6086,
+  "instancia_ec2": {"instance_id": "i-0abc123", "instance_type": "t2.large"},
   "generado_en": "2026-04-19T10:05:24"
 }
 ```
@@ -374,6 +375,9 @@ El modulo de metadata registra cada etapa del proceso:
 | CSV no encontrado | ERROR | `No se encontro CSV: data/plantas_revision_tecnica.csv` |
 | Metadata de captura subida | DEBUG | `[META] Huechuraba -> s3://flujo-prt-imagenes/metadata/capturas/...` |
 | Error subiendo metadata | WARNING | `[META] No se pudo generar metadata para Huechuraba: ...` |
+| Stats periodicas escritas | INFO | `[S3] Stats escritas: metadata/stats/2026/04/19/resumen.json` |
+| Validacion diaria programada | INFO | `[VAL] Validacion programada para 20:25 (en 0h 45min)` |
+| Validacion diaria iniciada | INFO | `[VAL] Lanzando validacion para prefijo: capturas/2026/04/19/` |
 
 La metadata por captura opera en modo **best-effort**: si falla, se registra un warning pero no interrumpe la captura ni la subida de la imagen.
 
@@ -453,6 +457,12 @@ aws s3 ls s3://flujo-prt-imagenes/capturas/2026/04/19/
 # Ver metadata de hoy
 aws s3 ls s3://flujo-prt-imagenes/metadata/capturas/2026/04/19/
 
+# Ver JSONL de validacion vehicular de hoy (por planta)
+aws s3 ls s3://flujo-prt-imagenes/metadata/capturas/2026/04/19/ --recursive | grep ".jsonl"
+
+# Ver stats del proceso capturador de hoy
+aws s3 cp s3://flujo-prt-imagenes/metadata/stats/2026/04/19/resumen.json -
+
 # Ver el catalogo de plantas
 aws s3 cp s3://flujo-prt-imagenes/metadata/plantas/catalogo_plantas.json -
 ```
@@ -505,14 +515,18 @@ Umbral de confianza por defecto: `0.55` (configurable via `UMBRAL_CONFIANZA`).
 
 ### validate_vehiculos.py
 
-Procesa todas las imagenes bajo un prefijo S3, genera un JSONL con conteos por imagen, dibuja bounding boxes y opcionalmente sube imagenes anotadas a S3.
+Procesa todas las imagenes bajo un prefijo S3, genera un JSONL por planta por dia con conteos y detecciones, dibuja bounding boxes y sube imagenes anotadas directamente a S3 (sin escritura local).
+
+La ejecucion es **idempotente**: si ya existe un JSONL parcial de una planta (ejecucion previa interrumpida), carga los registros existentes y solo procesa las imagenes faltantes.
+
+Se dispara automaticamente desde el proceso principal a traves de `tarea_validacion_diaria()`, pero tambien puede ejecutarse manualmente:
 
 ```bash
 # Procesar capturas de 2026 (configuracion por defecto)
 python scripts/VehicleRecognition/validate_vehiculos.py
 
 # Prefijo especifico (dia o mes)
-python scripts/VehicleRecognition/validate_vehiculos.py --prefijo capturas/2026/04/
+python scripts/VehicleRecognition/validate_vehiculos.py --prefijo capturas/2026/04/25/
 
 # Umbral de confianza para dibujar boxes (0.0 dibuja todos, 0.55 filtra ruido)
 python scripts/VehicleRecognition/validate_vehiculos.py --confianza-min 0.55
@@ -521,8 +535,6 @@ python scripts/VehicleRecognition/validate_vehiculos.py --confianza-min 0.55
 python scripts/VehicleRecognition/validate_vehiculos.py --bucket mi-bucket-pruebas
 ```
 
-El JSONL y las imagenes anotadas se suben directamente a S3 via multipart upload (sin escritura local).
-
 **Variables de entorno:**
 
 | Variable | Default | Descripcion |
@@ -530,7 +542,9 @@ El JSONL y las imagenes anotadas se suben directamente a S3 via multipart upload
 | `S3_BUCKET` | `flujo-prt-imagenes` | Bucket S3 |
 | `S3_PREFIJO` | `capturas/2026/` | Prefijo a procesar |
 | `S3_PREFIJO_ANOTADAS` | `capturas_anotadas` | Prefijo destino imagenes con bbox |
-| `S3_PREFIJO_LOGS` | `metadata/validate_vehiculos` | Prefijo destino logs JSONL en S3 |
+| `S3_PREFIJO_JSONL` | `metadata/capturas` | Prefijo destino JSONL en S3 |
+
+**Ruta del JSONL generado:** `metadata/capturas/YYYY/MM/DD/{Planta}/{DENOM}_YYYYMMDD.jsonl`
 
 **Formato del registro JSONL por imagen:**
 
@@ -595,7 +609,9 @@ Modulo principal. Orquesta la captura, compresion, deduplicacion y subida de ima
 **Funciones principales:**
 - `capturar_camara()` - Tarea async por camara, captura cada 60 segundos
 - `worker_subida_s3()` - Consumer de la cola, sube imagen + metadata a S3
+- `tarea_validacion_diaria()` - Lanza `validate_vehiculos.py` 5 min tras el cierre de la ultima planta cada dia laboral
 - `verificar_credenciales_aws()` - Valida acceso AWS antes de iniciar
+- `obtener_metadata_ec2()` - Consulta IMDS v2 para obtener info de la instancia (best-effort)
 - `dentro_horario()` - Determina si una planta esta en horario de operacion
 - `esperar_hasta_apertura()` - Suspende el sistema fuera de horario
 
