@@ -9,8 +9,6 @@ Uso:
     python scripts/VehicleRecognition/validate_vehiculos.py
     python scripts/VehicleRecognition/validate_vehiculos.py --prefijo capturas/2026/ --salida /ruta/salida.jsonl
     python scripts/VehicleRecognition/validate_vehiculos.py --bucket otro-bucket --prefijo capturas/2025/04/
-    python scripts/VehicleRecognition/validate_vehiculos.py --sin-dibujo
-    python scripts/VehicleRecognition/validate_vehiculos.py --sin-s3
 """
 
 import argparse
@@ -198,8 +196,6 @@ def procesar_objeto(
     obj: dict,
     destino: str,
     confianza_min: float,
-    sin_dibujo: bool,
-    sin_s3: bool,
     prefijo_anotadas: str,
     logger: logging.Logger,
 ) -> dict:
@@ -239,13 +235,11 @@ def procesar_objeto(
             registro["detecciones"] = detecciones
             registro["conteo"] = construir_conteo(detecciones)
 
-            if not sin_dibujo:
-                salida_img = ruta_destino_s3(clave, destino)
-                dibujar_boxes(ruta_tmp, salida_img, detecciones, confianza_min)
-                if not sin_s3:
-                    clave_anot = _clave_anotada(clave, prefijo_anotadas)
-                    if _subir_imagen_anotada(s3_client, bucket, salida_img, clave_anot, logger):
-                        registro["s3_key_anotada"] = clave_anot
+            salida_img = ruta_destino_s3(clave, destino)
+            dibujar_boxes(ruta_tmp, salida_img, detecciones, confianza_min)
+            clave_anot = _clave_anotada(clave, prefijo_anotadas)
+            if _subir_imagen_anotada(s3_client, bucket, salida_img, clave_anot, logger):
+                registro["s3_key_anotada"] = clave_anot
         finally:
             os.unlink(ruta_tmp)
 
@@ -269,15 +263,12 @@ def main():
         default=0.0,
         help="Umbral minimo de confianza para dibujar box (default: 0.0)",
     )
-    parser.add_argument("--sin-dibujo", action="store_true", help="Omitir el dibujado de boxes (solo genera JSONL)")
-    parser.add_argument("--sin-s3", action="store_true", help="Omitir la subida a S3 (solo guarda resultados localmente)")
     args = parser.parse_args()
 
     logger = configurar_logger()
     salida = os.path.normpath(args.salida)
     os.makedirs(os.path.dirname(salida), exist_ok=True)
-    if not args.sin_dibujo:
-        os.makedirs(args.destino, exist_ok=True)
+    os.makedirs(args.destino, exist_ok=True)
 
     s3 = boto3.client("s3")
 
@@ -298,12 +289,8 @@ def main():
     modelo = cargar_modelo()
 
     logger.info("Escribiendo log en: %s", salida)
-    if not args.sin_dibujo:
-        logger.info("Guardando imagenes anotadas en: %s", args.destino)
-    if not args.sin_s3:
-        logger.info("Subida S3 habilitada (anotadas → %s/, JSONL → %s/)", S3_PREFIJO_ANOTADAS, S3_PREFIJO_LOGS)
-    else:
-        logger.info("Subida S3 deshabilitada (--sin-s3)")
+    logger.info("Guardando imagenes anotadas en: %s", args.destino)
+    logger.info("Subida S3 habilitada (anotadas → %s/, JSONL → %s/)", S3_PREFIJO_ANOTADAS, S3_PREFIJO_LOGS)
 
     acum = {"auto": 0, "moto": 0, "bus": 0, "camion": 0, "total": 0, "errores": 0}
 
@@ -311,8 +298,8 @@ def main():
         for obj in tqdm(objetos, desc="Procesando", unit="img"):
             registro = procesar_objeto(
                 modelo, s3, args.bucket, obj,
-                args.destino, args.confianza_min, args.sin_dibujo,
-                args.sin_s3, S3_PREFIJO_ANOTADAS, logger,
+                args.destino, args.confianza_min,
+                S3_PREFIJO_ANOTADAS, logger,
             )
             f_out.write(json.dumps(registro, ensure_ascii=False) + "\n")
 
@@ -323,11 +310,9 @@ def main():
                 for tipo in ("auto", "moto", "bus", "camion", "total"):
                     acum[tipo] += registro["conteo"][tipo]
 
-    clave_jsonl_s3 = None
-    if not args.sin_s3:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        clave_jsonl_s3 = f"{S3_PREFIJO_LOGS}/registro_vehicular_{ts}.jsonl"
-        _subir_jsonl(s3, args.bucket, salida, clave_jsonl_s3, logger)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    clave_jsonl_s3 = f"{S3_PREFIJO_LOGS}/registro_vehicular_{ts}.jsonl"
+    _subir_jsonl(s3, args.bucket, salida, clave_jsonl_s3, logger)
 
     logger.info("=" * 50)
     logger.info("Procesamiento completado")
@@ -339,10 +324,8 @@ def main():
     logger.info("  Camiones detectados : %d", acum["camion"])
     logger.info("  Total vehiculos     : %d", acum["total"])
     logger.info("  Log JSONL guardado  : %s", salida)
-    if clave_jsonl_s3:
-        logger.info("  Log JSONL en S3     : s3://%s/%s", args.bucket, clave_jsonl_s3)
-    if not args.sin_dibujo:
-        logger.info("  Imagenes anotadas  : %s", args.destino)
+    logger.info("  Log JSONL en S3     : s3://%s/%s", args.bucket, clave_jsonl_s3)
+    logger.info("  Imagenes anotadas  : %s", args.destino)
     logger.info("=" * 50)
 
 
