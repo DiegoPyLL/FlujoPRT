@@ -4,44 +4,63 @@ Sistema automatizado de captura de imágenes CCTV desde plantas de revisión té
 
 ## Descripcion del Proyecto
 
-FlujoPRT captura imagenes en tiempo real desde 14 camaras IP de plantas TUV Rheinland distribuidas en 3 regiones de Chile. Las imagenes se comprimen, deduplican y almacenan automaticamente en AWS S3, organizadas por fecha y planta. Adicionalmente, el sistema genera metadata estructurada (JSON) a partir de un catalogo CSV de 116 plantas nacionales, almacenandola en un prefijo separado del mismo bucket.
+FlujoPRT captura imagenes en tiempo real a 14 camaras IP de plantas TUV Rheinland distribuidas en 3 regiones de Chile. Las imagenes se comprimen, deduplican y almacenan automaticamente en AWS S3, organizadas por fecha y planta. Luego de esto, se pasa por un proceso de reconocimiento vehicular en donde las imagenes de los vehiculos detectados se les guarda su box dibujada y su JSONL para mejorar la trazabilidad del dato.
 
 El sistema esta disenado para operar de forma continua en una instancia EC2, respetando los horarios de operacion de cada planta (lunes a sabado) y suspendiendo la actividad los domingos.
 
 ## Arquitectura del Pipeline
 
 ```
-                    FUENTE DE DATOS
-                    ===============
-    Camaras IP (14)                CSV Plantas (116)
-         |                                |
-         v                                v
-  +---------------+             +-------------------+
-  | Captura HTTP  |             | Lectura CSV       |
-  | (aiohttp)     |             | (csv.DictReader)  |
-  +-------+-------+             +--------+----------+
-          |                              |
-          v                              v
-  +---------------+             +-------------------+
-  | Compresion    |             | Enriquecimiento   |
-  | JPEG + MD5    |             | (cruce con        |
-  | (Pillow)      |             |  camaras activas) |
-  +-------+-------+             +--------+----------+
-          |                              |
-          v                              v
-  +---------------+             +-------------------+
-  | Cola Async    |             | catalogo_plantas   |
-  | (Queue)       |             | .json             |
-  +-------+-------+             +--------+----------+
-          |                              |
-          v                              v
-  +---------------+    +------+-------------------+
-  | Workers S3    |--->| AWS S3                    |
-  | (aioboto3)    |    |  capturas/YYYY/MM/DD/... |
-  |               |    |  metadata/plantas/...     |
-  | + metadata    |    |  metadata/capturas/...    |
-  |   por captura |    +---------------------------+
-  +---------------+
+                   FUENTE DE DATOS
+                   ===============
+                   Camaras IP (14)       
+                         |                
+                         v                
+                  +---------------+       
+                  | Captura HTTP  |       
+                  | (aiohttp)     |       
+                  +-------+-------+       
+                          |               
+                          v               
+                  +---------------+       
+                  | Compresion    |       
+                  | JPEG + MD5    |       
+                  | (Pillow)      |       
+                  +-------+-------+       
+                          |               
+                          v               
+                  +---------------+       
+                  | Cola Async    |       
+                  | (Queue)       |       
+                  +-------+-------+       
+                          |               
+                          v               
+                  +---------------+
+                  | Workers S3    |
+                  | (aioboto3)    |
+                  |               |
+                  | + metadata    |
+                  |   por captura |
+                  +---------------+
+                          |               
+                          v         
+         +---------------------------------+                  
+         | validate_vehiculo.py            |       
+         | (Reconocimiento vehicular       |       
+         |   utilizando YOLOv8m)           |         
+         |                                 | 
+         | + JSONL guardando la metadata   |   
+         |   del Reconocimiento vehicular  |   
+         |   separadolo por YYYY/MM/DD     | 
+         +---------------------------------+      
+                          |               
+                          v  
+            +---------------------------+
+            | AWS S3                    |
+            |  capturas/YYYY/MM/DD/...  |
+            |  metadata/plantas/...     |
+            |  metadata/capturas/...    |
+            +---------------------------+
 ```
 
 ## Estructura del Proyecto
@@ -135,25 +154,25 @@ pip install -r deploy/requirements.local.txt
 
 ### Dependencias del runtime de captura
 
-| Paquete | Version | Proposito |
-|---------|---------|-----------|
-| aiohttp | 3.9.2 | Cliente HTTP asincrono para captura de imagenes |
-| aioboto3 | 12.3.0 | Cliente AWS S3 asincrono |
-| aiobotocore | 2.11.2 | Core de aioboto3 |
-| boto3 | 1.34.34 | SDK AWS para Python |
-| botocore | 1.34.34 | Core de boto3 |
-| s3transfer | 0.10.0 | Transferencias S3 optimizadas |
-| Pillow | 10.2.0 | Compresion y procesamiento JPEG |
-| uvloop | 0.19.0 | Event loop optimizado (solo Linux) |
+| Paquete     | Version | Proposito                                       |
+| ----------- | ------- | ----------------------------------------------- |
+| aiohttp     | 3.9.2   | Cliente HTTP asincrono para captura de imagenes |
+| aioboto3    | 12.3.0  | Cliente AWS S3 asincrono                        |
+| aiobotocore | 2.11.2  | Core de aioboto3                                |
+| boto3       | 1.34.34 | SDK AWS para Python                             |
+| botocore    | 1.34.34 | Core de boto3                                   |
+| s3transfer  | 0.10.0  | Transferencias S3 optimizadas                   |
+| Pillow      | 10.2.0  | Compresion y procesamiento JPEG                 |
+| uvloop      | 0.19.0  | Event loop optimizado (solo Linux)              |
 
 ### Dependencias del subsistema vehicular
 
-| Paquete | Proposito |
-|---------|-----------|
-| ultralytics | YOLOv8 para deteccion de vehiculos en imagenes CCTV |
-| boto3 | Acceso a S3 (modo sincrono, suficiente para scripts batch) |
-| Pillow | Dibujo de bounding boxes sobre imagenes |
-| tqdm | Barra de progreso durante el procesamiento en lote |
+| Paquete     | Proposito                                                  |
+| ----------- | ---------------------------------------------------------- |
+| ultralytics | YOLOv8 para deteccion de vehiculos en imagenes CCTV        |
+| boto3       | Acceso a S3 (modo sincrono, suficiente para scripts batch) |
+| Pillow      | Dibujo de bounding boxes sobre imagenes                    |
+| tqdm        | Barra de progreso durante el procesamiento en lote         |
 
 ```bash
 pip install ultralytics tqdm Pillow boto3
@@ -167,27 +186,27 @@ Todas las variables se configuran mediante variables de entorno. Si no se define
 
 ### Captura de Imagenes
 
-| Variable | Default | Descripcion |
-|----------|---------|-------------|
-| `S3_BUCKET` | `flujo-prt-imagenes` | Nombre del bucket S3 |
-| `S3_PREFIX` | `capturas` | Prefijo S3 para imagenes |
-| `INTERVALO` | `60` | Segundos entre capturas por camara |
-| `TZ` | `America/Santiago` | Zona horaria del sistema |
-| `JPEG_QUALITY` | `80` | Calidad de compresion JPEG (0-100) |
-| `MAX_DESCARGAS` | `10` | Descargas HTTP simultaneas maximas |
-| `QUEUE_SIZE` | `40` | Tamanio maximo de la cola de subida |
-| `NUM_UPLOADERS` | `2` | Workers paralelos de subida a S3 |
-| `METRICAS_INTERVALO` | `300` | Segundos entre reportes de metricas |
-| `MARGEN_PREVIO` | `1200` | Segundos antes de apertura para despertar (20 min) |
+| Variable               | Default                | Descripcion                                        |
+| ---------------------- | ---------------------- | -------------------------------------------------- |
+| `S3_BUCKET`          | `flujo-prt-imagenes` | Nombre del bucket S3                               |
+| `S3_PREFIX`          | `capturas`           | Prefijo S3 para imagenes                           |
+| `INTERVALO`          | `60`                 | Segundos entre capturas por camara                 |
+| `TZ`                 | `America/Santiago`   | Zona horaria del sistema                           |
+| `JPEG_QUALITY`       | `80`                 | Calidad de compresion JPEG (0-100)                 |
+| `MAX_DESCARGAS`      | `10`                 | Descargas HTTP simultaneas maximas                 |
+| `QUEUE_SIZE`         | `40`                 | Tamanio maximo de la cola de subida                |
+| `NUM_UPLOADERS`      | `2`                  | Workers paralelos de subida a S3                   |
+| `METRICAS_INTERVALO` | `300`                | Segundos entre reportes de metricas                |
+| `MARGEN_PREVIO`      | `1200`               | Segundos antes de apertura para despertar (20 min) |
 
 ### Ingesta de Metadata
 
-| Variable | Default | Descripcion |
-|----------|---------|-------------|
-| `METADATA_PREFIX` | `metadata` | Prefijo S3 para archivos de metadata |
-| `PLANTAS_CSV_PATH` | `data/plantas_revision_tecnica.csv` | Ruta al CSV fuente |
-| `METADATA_SNAPSHOT` | `false` | Si es `true`, guarda copia fechada del catalogo |
-| `CATALOGO_REFRESH_HORAS` | `24` | Horas entre actualizaciones del catalogo |
+| Variable                   | Default                               | Descripcion                                       |
+| -------------------------- | ------------------------------------- | ------------------------------------------------- |
+| `METADATA_PREFIX`        | `metadata`                          | Prefijo S3 para archivos de metadata              |
+| `PLANTAS_CSV_PATH`       | `data/plantas_revision_tecnica.csv` | Ruta al CSV fuente                                |
+| `METADATA_SNAPSHOT`      | `false`                             | Si es `true`, guarda copia fechada del catalogo |
+| `CATALOGO_REFRESH_HORAS` | `24`                                | Horas entre actualizaciones del catalogo          |
 
 ## Ejecucion
 
@@ -199,6 +218,7 @@ python3 src/imageRecopilator/Cloud/ImageRecompilerCloud.py
 ```
 
 Al ejecutarse:
+
 1. Verifica credenciales AWS (via STS) y consulta metadata de la instancia EC2 (IMDS v2)
 2. Ingesta el catalogo de plantas desde el CSV y lo sube a S3
 3. Lanza 14 tareas de captura en paralelo (una por camara)
@@ -241,32 +261,32 @@ chmod +x deploy/run.sh
 
 ### Region Metropolitana (7 plantas)
 
-| Planta | Denominador | Horario Lun-Vie | Horario Sabado |
-|--------|-------------|------------------|----------------|
-| Huechuraba | HCH | 07:10 - 16:50 | 07:10 - 16:50 |
-| La Florida | LFL | 07:40 - 17:20 | 07:10 - 16:50 |
-| La Pintana | LPT | 07:40 - 17:20 | 07:10 - 16:50 |
-| Pudahuel | PUD | 07:40 - 17:20 | 07:10 - 16:50 |
-| Quilicura | QLC | 07:10 - 16:50 | 07:10 - 16:50 |
-| Recoleta | RCL | 07:40 - 17:20 | 07:10 - 16:50 |
-| San Joaquin | SJQ | 07:40 - 17:20 | 07:10 - 16:50 |
+| Planta      | Denominador | Horario Lun-Vie | Horario Sabado |
+| ----------- | ----------- | --------------- | -------------- |
+| Huechuraba  | HCH         | 07:10 - 16:50   | 07:10 - 16:50  |
+| La Florida  | LFL         | 07:40 - 17:20   | 07:10 - 16:50  |
+| La Pintana  | LPT         | 07:40 - 17:20   | 07:10 - 16:50  |
+| Pudahuel    | PUD         | 07:40 - 17:20   | 07:10 - 16:50  |
+| Quilicura   | QLC         | 07:10 - 16:50   | 07:10 - 16:50  |
+| Recoleta    | RCL         | 07:40 - 17:20   | 07:10 - 16:50  |
+| San Joaquin | SJQ         | 07:40 - 17:20   | 07:10 - 16:50  |
 
 ### Region de La Araucania (2 plantas)
 
-| Planta | Denominador | Horario Lun-Vie | Horario Sabado |
-|--------|-------------|------------------|----------------|
-| Temuco | TMU | 08:10 - 18:20 | 08:10 - 13:50 |
-| Villarica | VLL | 07:10 - 17:50 | 07:40 - 13:50 |
+| Planta    | Denominador | Horario Lun-Vie | Horario Sabado |
+| --------- | ----------- | --------------- | -------------- |
+| Temuco    | TMU         | 08:10 - 18:20   | 08:10 - 13:50  |
+| Villarica | VLL         | 07:10 - 17:50   | 07:40 - 13:50  |
 
 ### Region del Biobio y Nuble (5 plantas)
 
-| Planta | Denominador | Horario Lun-Vie | Horario Sabado |
-|--------|-------------|------------------|----------------|
-| Chillan | CHL | 06:40 - 17:20 | 07:10 - 13:50 |
-| Yungay | YGY | 07:40 - 17:20 | 08:10 - 13:50 |
-| Concepcion | CCP | 07:40 - 20:20 | 08:10 - 16:50 |
-| San Pedro de la Paz | SPP | 07:40 - 17:20 | 08:10 - 13:50 |
-| Yumbel | YMB | 07:40 - 17:20 | 08:10 - 13:50 |
+| Planta              | Denominador | Horario Lun-Vie | Horario Sabado |
+| ------------------- | ----------- | --------------- | -------------- |
+| Chillan             | CHL         | 06:40 - 17:20   | 07:10 - 13:50  |
+| Yungay              | YGY         | 07:40 - 17:20   | 08:10 - 13:50  |
+| Concepcion          | CCP         | 07:40 - 20:20   | 08:10 - 16:50  |
+| San Pedro de la Paz | SPP         | 07:40 - 17:20   | 08:10 - 13:50  |
+| Yumbel              | YMB         | 07:40 - 17:20   | 08:10 - 13:50  |
 
 Los domingos no se realiza captura en ninguna planta.
 
@@ -278,17 +298,7 @@ El sistema no solo captura imagenes, tambien genera **datos estructurados** que 
 
 ### Fuente de datos: CSV de plantas
 
-El archivo `data/plantas_revision_tecnica.csv` contiene informacion de **116 plantas de revision tecnica** de 15 plataformas nacionales:
-
-| Columna | Descripcion | Ejemplo |
-|---------|-------------|---------|
-| Plataforma | Empresa operadora | TUV Rheinland, San Damaso, Applus |
-| Region | Region de Chile | Region Metropolitana |
-| Comuna | Comuna donde esta la planta | Huechuraba |
-| Direccion | Direccion fisica | Av. Santa Clara N523 |
-| URL_Reserva | Sitio web de reservas | https://www.prt.tuv.com/horario-prt |
-
-De estas 116 plantas, **14 corresponden a TUV Rheinland** y tienen camara activa en el sistema.
+El archivo `data/plantas_revision_tecnica.csv` contiene informacion de **116 plantas de revision tecnica** de 15 plataformas nacionales. Esta información se guarda para que a futuro se pueda tener una obtención de todas las plantas de revisión técnica del pais.
 
 ### Tipo 1: Catalogo de plantas
 
@@ -366,18 +376,18 @@ Cada vez que una imagen se sube exitosamente a S3, el worker genera automaticame
 
 El modulo de metadata registra cada etapa del proceso:
 
-| Evento | Nivel | Mensaje de ejemplo |
-|--------|-------|--------------------|
-| Inicio de ingesta | INFO | `=== INICIO INGESTA CATALOGO PLANTAS ===` |
-| CSV leido | INFO | `CSV leido: 116 plantas de 15 plataformas` |
-| Catalogo construido | INFO | `Catalogo construido: 14 con camara activa, 102 sin camara` |
-| Catalogo subido a S3 | INFO | `Catalogo subido: 116 registros -> s3://flujo-prt-imagenes/...` |
-| CSV no encontrado | ERROR | `No se encontro CSV: data/plantas_revision_tecnica.csv` |
-| Metadata de captura subida | DEBUG | `[META] Huechuraba -> s3://flujo-prt-imagenes/metadata/capturas/...` |
-| Error subiendo metadata | WARNING | `[META] No se pudo generar metadata para Huechuraba: ...` |
-| Stats periodicas escritas | INFO | `[S3] Stats escritas: metadata/stats/2026/04/19/resumen.json` |
-| Validacion diaria programada | INFO | `[VAL] Validacion programada para 20:25 (en 0h 45min)` |
-| Validacion diaria iniciada | INFO | `[VAL] Lanzando validacion para prefijo: capturas/2026/04/19/` |
+| Evento                       | Nivel   | Mensaje de ejemplo                                                     |
+| ---------------------------- | ------- | ---------------------------------------------------------------------- |
+| Inicio de ingesta            | INFO    | `=== INICIO INGESTA CATALOGO PLANTAS ===`                            |
+| CSV leido                    | INFO    | `CSV leido: 116 plantas de 15 plataformas`                           |
+| Catalogo construido          | INFO    | `Catalogo construido: 14 con camara activa, 102 sin camara`          |
+| Catalogo subido a S3         | INFO    | `Catalogo subido: 116 registros -> s3://flujo-prt-imagenes/...`      |
+| CSV no encontrado            | ERROR   | `No se encontro CSV: data/plantas_revision_tecnica.csv`              |
+| Metadata de captura subida   | DEBUG   | `[META] Huechuraba -> s3://flujo-prt-imagenes/metadata/capturas/...` |
+| Error subiendo metadata      | WARNING | `[META] No se pudo generar metadata para Huechuraba: ...`            |
+| Stats periodicas escritas    | INFO    | `[S3] Stats escritas: metadata/stats/2026/04/19/resumen.json`        |
+| Validacion diaria programada | INFO    | `[VAL] Validacion programada para 20:25 (en 0h 45min)`               |
+| Validacion diaria iniciada   | INFO    | `[VAL] Lanzando validacion para prefijo: capturas/2026/04/19/`       |
 
 La metadata por captura opera en modo **best-effort**: si falla, se registra un warning pero no interrumpe la captura ni la subida de la imagen.
 
@@ -411,6 +421,7 @@ La metadata por captura opera en modo **best-effort**: si falla, se registra un 
 ### Control de Horarios
 
 El sistema solo captura durante los horarios de operacion de cada planta:
+
 - **Lunes a viernes**: Horario completo por planta
 - **Sabados**: Horario reducido por planta
 - **Domingos**: Sin captura, el sistema se suspende hasta el lunes
@@ -440,11 +451,11 @@ ssh -L 8501:localhost:8501 ec2-user@<ip-ec2>
 
 Variables de entorno relevantes:
 
-| Variable | Default | Descripcion |
-|----------|---------|-------------|
-| `DASHBOARD_REFRESH` | `300` | Segundos entre refresh automatico |
-| `GAP_THRESHOLD` | `180` | Segundos entre capturas para marcar gap |
-| `DOWN_THRESHOLD` | `900` | Segundos sin captura para marcar planta caida |
+| Variable              | Default | Descripcion                                   |
+| --------------------- | ------- | --------------------------------------------- |
+| `DASHBOARD_REFRESH` | `300` | Segundos entre refresh automatico             |
+| `GAP_THRESHOLD`     | `180` | Segundos entre capturas para marcar gap       |
+| `DOWN_THRESHOLD`    | `900` | Segundos sin captura para marcar planta caida |
 
 El dashboard es read-only sobre S3, no interfiere con el capturador.
 
@@ -496,20 +507,20 @@ El subsistema de reconocimiento vehicular detecta automaticamente autos, motos, 
 
 ### Modulos
 
-| Archivo | Descripcion |
-|---------|-------------|
-| `detector.py` | Wrapper sobre YOLOv8 (`ultralytics`). Carga el modelo y retorna detecciones `{bbox, tipo, confianza}` por imagen |
-| `validate_vehiculos.py` | Recorre un prefijo S3, detecta vehiculos en cada JPG, dibuja bbox sobre las imagenes y escribe un log JSONL |
-| `analisis_historico.py` | Procesamiento en lote del historico: detecta vehiculos en imagenes que aun no tienen deteccion y sube JSONs a S3 |
+| Archivo                   | Descripcion                                                                                                          |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `detector.py`           | Wrapper sobre YOLOv8 (`ultralytics`). Carga el modelo y retorna detecciones `{bbox, tipo, confianza}` por imagen |
+| `validate_vehiculos.py` | Recorre un prefijo S3, detecta vehiculos en cada JPG, dibuja bbox sobre las imagenes y escribe un log JSONL          |
+| `analisis_historico.py` | Procesamiento en lote del historico: detecta vehiculos en imagenes que aun no tienen deteccion y sube JSONs a S3     |
 
 ### Clases detectadas
 
 | Clase COCO | Etiqueta | Color bbox |
-|------------|----------|------------|
-| 2 | auto | verde |
-| 3 | moto | azul |
-| 5 | bus | amarillo |
-| 7 | camion | rojo |
+| ---------- | -------- | ---------- |
+| 2          | auto     | verde      |
+| 3          | moto     | azul       |
+| 5          | bus      | amarillo   |
+| 7          | camion   | rojo       |
 
 Umbral de confianza por defecto: `0.55` (configurable via `UMBRAL_CONFIANZA`).
 
@@ -537,12 +548,12 @@ python scripts/VehicleRecognition/validate_vehiculos.py --bucket mi-bucket-prueb
 
 **Variables de entorno:**
 
-| Variable | Default | Descripcion |
-|----------|---------|-------------|
-| `S3_BUCKET` | `flujo-prt-imagenes` | Bucket S3 |
-| `S3_PREFIJO` | `capturas/2026/` | Prefijo a procesar |
-| `S3_PREFIJO_ANOTADAS` | `capturas_anotadas` | Prefijo destino imagenes con bbox |
-| `S3_PREFIJO_JSONL` | `metadata/capturas` | Prefijo destino JSONL en S3 |
+| Variable                | Default                | Descripcion                       |
+| ----------------------- | ---------------------- | --------------------------------- |
+| `S3_BUCKET`           | `flujo-prt-imagenes` | Bucket S3                         |
+| `S3_PREFIJO`          | `capturas/2026/`     | Prefijo a procesar                |
+| `S3_PREFIJO_ANOTADAS` | `capturas_anotadas`  | Prefijo destino imagenes con bbox |
+| `S3_PREFIJO_JSONL`    | `metadata/capturas`  | Prefijo destino JSONL en S3       |
 
 **Ruta del JSONL generado:** `metadata/capturas/YYYY/MM/DD/{Planta}/{DENOM}_YYYYMMDD.jsonl`
 
@@ -590,13 +601,13 @@ python scripts/VehicleRecognition/analisis_historico.py --forzar
 
 **Variables de entorno:**
 
-| Variable | Default | Descripcion |
-|----------|---------|-------------|
-| `S3_BUCKET` | `flujo-prt-imagenes` | Bucket S3 |
-| `S3_PREFIX` | `capturas` | Prefijo imagenes originales |
-| `METADATA_PREFIX` | `metadata` | Prefijo para JSONs de deteccion |
-| `MODELO_YOLO` | `yolov8m.pt` | Archivo de pesos YOLO |
-| `UMBRAL_CONFIANZA` | `0.55` | Umbral minimo de confianza |
+| Variable             | Default                | Descripcion                     |
+| -------------------- | ---------------------- | ------------------------------- |
+| `S3_BUCKET`        | `flujo-prt-imagenes` | Bucket S3                       |
+| `S3_PREFIX`        | `capturas`           | Prefijo imagenes originales     |
+| `METADATA_PREFIX`  | `metadata`           | Prefijo para JSONs de deteccion |
+| `MODELO_YOLO`      | `yolov8m.pt`         | Archivo de pesos YOLO           |
+| `UMBRAL_CONFIANZA` | `0.55`               | Umbral minimo de confianza      |
 
 Los resultados de deteccion se almacenan en `metadata/detecciones/YYYY/MM/DD/Planta/img.json` y se enriquece el JSON de metadata de captura existente con un campo `detecciones`.
 
@@ -607,6 +618,7 @@ Los resultados de deteccion se almacenan en `metadata/detecciones/YYYY/MM/DD/Pla
 Modulo principal. Orquesta la captura, compresion, deduplicacion y subida de imagenes. Al iniciar, tambien dispara la ingesta del catalogo de metadata y en cada subida exitosa genera la metadata por captura.
 
 **Funciones principales:**
+
 - `capturar_camara()` - Tarea async por camara, captura cada 60 segundos
 - `worker_subida_s3()` - Consumer de la cola, sube imagen + metadata a S3
 - `tarea_validacion_diaria()` - Lanza `validate_vehiculos.py` 5 min tras el cierre de la ultima planta cada dia laboral
@@ -617,11 +629,11 @@ Modulo principal. Orquesta la captura, compresion, deduplicacion y subida de ima
 
 ### Subsistema de reconocimiento vehicular
 
-| Modulo | Descripcion |
-|--------|-------------|
-| `scripts/VehicleRecognition/detector.py` | Carga YOLOv8 y retorna lista de detecciones `{bbox, tipo, confianza}` |
-| `scripts/VehicleRecognition/validate_vehiculos.py` | Valida, dibuja bbox y genera log JSONL desde S3 |
-| `scripts/VehicleRecognition/analisis_historico.py` | Procesamiento en lote incremental del historico S3 |
+| Modulo                                               | Descripcion                                                             |
+| ---------------------------------------------------- | ----------------------------------------------------------------------- |
+| `scripts/VehicleRecognition/detector.py`           | Carga YOLOv8 y retorna lista de detecciones `{bbox, tipo, confianza}` |
+| `scripts/VehicleRecognition/validate_vehiculos.py` | Valida, dibuja bbox y genera log JSONL desde S3                         |
+| `scripts/VehicleRecognition/analisis_historico.py` | Procesamiento en lote incremental del historico S3                      |
 
 Ver seccion [Reconocimiento Vehicular](#reconocimiento-vehicular-yolov8) para uso detallado.
 

@@ -1,8 +1,3 @@
-
-======================================================================
-       GUÍA DE COMANDOS - SISTEMA CAPTURA Y PROCESAMIENTO FlujoPRT_CCTV
-======================================================================
-
 1. CONFIGURACIÓN
 ---------------------------------------------------------
 desde el usuario root crear un grupo de seguridad, asignarle un usuario con permisos full access de ec2, s3 y
@@ -10,7 +5,7 @@ administrator
 
 asegurarse de crear el ec2 y s3 en la misma region
 
-# Crear EC2 con t2.small 
+# Crear EC2 con t2.large 
 
 # Crear bucket llamado flujo-prt-imagenes
        # Revisar la creación desde el ec2 usando el comando aws s3 ls
@@ -86,6 +81,9 @@ asegurarse de crear el ec2 y s3 en la misma region
 
        2. DESCARGAR / SINCRONIZAR DESDE AWS S3
        ---------------------------------------------------------
+       *   Para configurar las credenciales del usuario s3-downloader
+              aws configure 
+
        *   Sincronizar TODAS las capturas a carpeta local:
               aws s3 sync s3://flujoprt-bucket/capturas/ ./descargas_fotos/
 
@@ -95,30 +93,15 @@ asegurarse de crear el ec2 y s3 en la misma region
        *   Bajar fotos de una planta específica:
               aws s3 sync s3://flujoprt-bucket/capturas/2026/01/22/Temuco/ ./fotos_temuco/
 
-       *   Descargar los Timelapses generados:
-              aws s3 sync s3://flujoprt-bucket/timelapses/ ./videos_finales/
+       
 
 
 
 
 
-       3. MONITOREO DE ALMACENAMIENTO Y RED
-       ---------------------------------------------------------
-       *   Ver peso total en S3 (Resumen):
-              aws s3 ls s3://flujoprt-bucket/capturas/ --recursive --human-readable --summarize
-
-       *   Listar carpetas de hoy para verificar subida:
-              aws s3 ls s3://flujoprt-bucket/capturas/2026/01/22/
-
-       *   Probar conexión manual a una cámara:
-              curl -I https://pti-cameras.cl.tuv.com/camaras/10.57.32.222_Cam01/imagen.jpg
-
-       *   Ver espacio en disco local del servidor:
-              df -h
 
 
-
-       4. LOGS Y DIAGNÓSTICO
+       3. LOGS Y DIAGNÓSTICO
        ---------------------------------------------------------
        *   Ver log en tiempo real (ajustar ruta según .env):
               tail -f /data/flujo_prt/logs/FlujoPRT_CCTV.log
@@ -134,7 +117,7 @@ asegurarse de crear el ec2 y s3 en la misma region
 
 
 
-DESCARGA DE archivos DESDE AWS CLI
+Directorios de descarga de archivos desde AWS CLI
 
 aws s3 sync s3://flujo-prt-imagenes/capturas/ "Direccion destino" --exact-timestamps --no-progress
 

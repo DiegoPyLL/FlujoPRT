@@ -9,8 +9,7 @@ Guia paso a paso para levantar el sistema completo (captura + S3 + dashboard) en
 - Cuenta AWS activa con permisos de administrador
 - Cliente AWS CLI instalado en tu maquina local (`aws --version`)
 - Git instalado localmente
-
-pip install -r deploy/requirements.txt
+- pip install -r deploy/requirements.txt
 
 ---
 
@@ -150,7 +149,7 @@ Si las credenciales se comprometen: IAM → Users → s3-downloader → Security
 
 Si prefieres credenciales estaticas en lugar de un rol para la instancia:
 
-1. IAM → **Users** → **Create user** → nombre: `flujoprt-capturador`
+1. IAM → **Users** → **Create user** → nombre: FlujoPRT_user
 2. Adjuntar la misma politica JSON del paso 1.1
 3. **Security credentials** → **Create access key** → use case: **Application running on AWS compute service**
 4. Guardar `Access key ID` y `Secret access key` — se usaran en el paso 5
@@ -186,17 +185,22 @@ aws s3 ls | grep flujo-prt-imagenes
 ## 3. Crear la instancia EC2
 
 1. EC2 → **Launch instance**
-2. **Name:** `FlujoPRT-CCTV`
+2. **Name:** `FlujoPRT`
 3. **AMI:** Ubuntu Server 22.04 LTS (64-bit x86)
-4. **Instance type:** `t2.large` (minimo recomendado; `t3.small` si hay disponibilidad)
+4. **Instance type:** `t2.large` (minimo recomendado; `t3.medium` si hay disponibilidad)
 5. **Key pair:** crear o seleccionar un par de claves `.pem`
-6. **Security group:** crear nuevo con las siguientes reglas de entrada:| Tipo              | Puerto | Origen                 | Descripcion                    |
-   | ----------------- | ------ | ---------------------- | ------------------------------ |
-   | SSH               | 22     | Tu IP (`x.x.x.x/32`) | Acceso administrativo          |
-   | TCP personalizado | 8501   | Tu IP (`x.x.x.x/32`) | Dashboard Streamlit (opcional) |
-7. **Advanced details → IAM instance profile:** seleccionar `FlujoPRT-EC2-Role`
-8. **Storage:** 20 GB gp3 es suficiente (las imagenes van a S3, no al disco)
-9. **Launch instance**
+6. **Security group:** crear nuevo con las siguientes reglas de entrada
+
+| Tipo              | Puerto | Origen             | Descripción                   |
+| :---------------- | :----- | :----------------- | :----------------------------- |
+| SSH               | 22     | Tu IP (x.x.x.x/32) | Acceso administrativo          |
+| TCP personalizado | 8501   | Tu IP (x.x.x.x/32) | Dashboard Streamlit (opcional) |
+
+1. **Advanced details → IAM instance profile:** seleccionar `FlujoPRT-EC2-Role`
+2. **Storage:** 20 GB gp3 es suficiente (las imagenes van a S3, no al disco)
+3. **Launch instance**
+
+
 
 Verificar que la EC2 puede acceder a S3:
 

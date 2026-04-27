@@ -438,3 +438,206 @@ async def test_worker_s3_procesa_cola():
             pass
 
         mock_s3.put_object.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# subir_metadata_captura
+# ---------------------------------------------------------------------------
+
+_MOD_CLOUD = 'imageRecopilator.Cloud.ImageRecompilerCloud'
+
+
+@pytest.mark.imageRecopilator
+class TestSubirMetadataCaptura:
+
+    @pytest.mark.asyncio
+    async def test_subida_exitosa_no_lanza_excepcion(self):
+        mock_s3 = AsyncMock()
+        with patch(f'{_MOD_CLOUD}.subir_json_s3', new_callable=AsyncMock, return_value=True):
+            await cloud.subir_metadata_captura(
+                mock_s3, "Huechuraba", "20260423_100000",
+                "capturas/2026/04/23/Huechuraba/HCH_20260423_100000.jpg",
+                100000, 50000, "mi-bucket"
+            )
+
+    @pytest.mark.asyncio
+    async def test_subida_retorna_false_no_lanza_excepcion(self):
+        mock_s3 = AsyncMock()
+        with patch(f'{_MOD_CLOUD}.subir_json_s3', new_callable=AsyncMock, return_value=False):
+            await cloud.subir_metadata_captura(
+                mock_s3, "Temuco", "20260423_100000",
+                "capturas/2026/04/23/Temuco/TMU_20260423_100000.jpg",
+                1000, 500, "bucket"
+            )
+
+    @pytest.mark.asyncio
+    async def test_excepcion_interna_no_propaga(self):
+        mock_s3 = AsyncMock()
+        with patch(f'{_MOD_CLOUD}.generar_metadata_captura', side_effect=ValueError("error inesperado")):
+            await cloud.subir_metadata_captura(
+                mock_s3, "Temuco", "20260423_100000",
+                "key.jpg", 1000, 500, "bucket"
+            )
+
+
+# ---------------------------------------------------------------------------
+# obtener_menor_tiempo_espera
+# ---------------------------------------------------------------------------
+
+@pytest.mark.imageRecopilator
+class TestObtenerMenorTiempoEspera:
+
+    def test_retorna_minimo_entre_valores_validos(self):
+        with patch(f'{_MOD_CLOUD}.obtener_tiempos_restantes',
+                   return_value={"A": 300, "B": 120, "C": 600}):
+            assert cloud.obtener_menor_tiempo_espera() == 120
+
+    def test_retorna_none_cuando_todos_none(self):
+        with patch(f'{_MOD_CLOUD}.obtener_tiempos_restantes',
+                   return_value={"A": None, "B": None}):
+            assert cloud.obtener_menor_tiempo_espera() is None
+
+    def test_ignora_ceros_y_negativos(self):
+        with patch(f'{_MOD_CLOUD}.obtener_tiempos_restantes',
+                   return_value={"A": 0, "B": -5, "C": 90}):
+            assert cloud.obtener_menor_tiempo_espera() == 90
+
+
+# ---------------------------------------------------------------------------
+# obtener_hora_cierre_maxima
+# ---------------------------------------------------------------------------
+
+@pytest.mark.imageRecopilator
+class TestObtenerHoraCierreMaxima:
+
+    def test_dia_semana_retorna_datetime_con_fecha_de_hoy(self):
+        fecha = datetime(2026, 4, 27, 10, 0, 0)  # lunes
+        with patch.object(cloud, 'datetime') as mock_dt:
+            mock_dt.now.return_value = fecha
+            mock_dt.strptime = datetime.strptime
+            mock_dt.combine = datetime.combine
+            resultado = cloud.obtener_hora_cierre_maxima()
+        assert isinstance(resultado, datetime)
+        assert resultado.date() == fecha.date()
+
+    def test_sabado_retorna_datetime_valido(self):
+        fecha = datetime(2026, 4, 25, 10, 0, 0)  # sábado (weekday=5)
+        with patch.object(cloud, 'datetime') as mock_dt:
+            mock_dt.now.return_value = fecha
+            mock_dt.strptime = datetime.strptime
+            mock_dt.combine = datetime.combine
+            resultado = cloud.obtener_hora_cierre_maxima()
+        assert isinstance(resultado, datetime)
+        assert resultado.date() == fecha.date()
+
+
+# ---------------------------------------------------------------------------
+# capturar_camara — casos adicionales
+# ---------------------------------------------------------------------------
+
+@pytest.mark.imageRecopilator
+class TestCapturaCamaraExtra:
+
+    @pytest.mark.asyncio
+    async def test_timeout_de_red_llama_registrar_error(self):
+        mock_session = MagicMock()
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(side_effect=asyncio.TimeoutError())
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        mock_session.get.return_value = mock_cm
+
+        class BreakLoop(Exception):
+            pass
+
+        # 5 retry sleeps (2.5s cada uno) + 1 sleep del intervalo outer
+        with patch(f'{_MOD_CLOUD}.dentro_horario', return_value=True), \
+             patch(f'{_MOD_CLOUD}.metricas.registrar_error_descarga', new_callable=AsyncMock) as mock_reg, \
+             patch(f'{_MOD_CLOUD}.metricas.imprimir_si_toca', new_callable=AsyncMock), \
+             patch('asyncio.sleep', side_effect=[None, None, None, None, None, BreakLoop()]):
+            try:
+                await cloud.capturar_camara(mock_session, "Temuco", "ID_CAM")
+            except BreakLoop:
+                pass
+
+        mock_reg.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_error_http_500_llama_registrar_error(self):
+        mock_session = MagicMock()
+        mock_resp = AsyncMock()
+        mock_resp.status = 500
+        mock_session.get.return_value.__aenter__.return_value = mock_resp
+
+        class BreakLoop(Exception):
+            pass
+
+        with patch(f'{_MOD_CLOUD}.dentro_horario', return_value=True), \
+             patch(f'{_MOD_CLOUD}.metricas.registrar_captura', new_callable=AsyncMock), \
+             patch(f'{_MOD_CLOUD}.metricas.registrar_error_descarga', new_callable=AsyncMock) as mock_reg, \
+             patch(f'{_MOD_CLOUD}.metricas.imprimir_si_toca', new_callable=AsyncMock), \
+             patch('asyncio.sleep', side_effect=[None, None, None, None, None, BreakLoop()]):
+            try:
+                await cloud.capturar_camara(mock_session, "Temuco", "ID_CAM")
+            except BreakLoop:
+                pass
+
+        mock_reg.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# worker_subida_s3 — casos de error adicionales
+# ---------------------------------------------------------------------------
+
+@pytest.mark.imageRecopilator
+class TestWorkerS3ErrorExtra:
+
+    @pytest.mark.asyncio
+    async def test_clienterror_llama_registrar_error_s3(self):
+        while not cloud.cola_subida.empty():
+            cloud.cola_subida.get_nowait()
+
+        await cloud.cola_subida.put(("Temuco", "20260427_100000", b"img", 500))
+
+        with patch('aioboto3.Session') as mock_session_cls, \
+             patch(f'{_MOD_CLOUD}.metricas.registrar_error_s3', new_callable=AsyncMock) as mock_err, \
+             patch(f'{_MOD_CLOUD}.metricas.registrar_subida', new_callable=AsyncMock):
+
+            mock_s3 = AsyncMock()
+            mock_s3.put_object.side_effect = ClientError(
+                {"Error": {"Code": "NoSuchBucket", "Message": "Not found"}}, "PutObject"
+            )
+            mock_session = MagicMock()
+            mock_session_cls.return_value = mock_session
+            mock_session.client.return_value.__aenter__ = AsyncMock(return_value=mock_s3)
+            mock_session.client.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            task = asyncio.create_task(cloud.worker_subida_s3(worker_id=2))
+            await asyncio.sleep(0.1)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        mock_err.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cola_vacia_worker_no_muere(self):
+        while not cloud.cola_subida.empty():
+            cloud.cola_subida.get_nowait()
+
+        with patch('aioboto3.Session') as mock_session_cls:
+            mock_s3 = AsyncMock()
+            mock_session = MagicMock()
+            mock_session_cls.return_value = mock_session
+            mock_session.client.return_value.__aenter__ = AsyncMock(return_value=mock_s3)
+            mock_session.client.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            task = asyncio.create_task(cloud.worker_subida_s3(worker_id=3))
+            await asyncio.sleep(0.05)
+            assert not task.done()
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass

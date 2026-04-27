@@ -6,3 +6,5 @@
 2026-04-23 22:38:06,367 [WARNING] [S3-ERROR] No se pudo descargar key.json: An error occurred (NoSuchKey) when calling the GetObject operation: Not found
 2026-04-23 22:39:22,693 [WARNING] [INVALID] key.json → JSON malformado: Expecting property name enclosed in double quotes: line 1 column 3 (char 2)
 2026-04-23 22:39:22,695 [WARNING] [S3-ERROR] No se pudo descargar key.json: An error occurred (NoSuchKey) when calling the GetObject operation: Not found
+2026-04-27 14:43:36,825 [WARNING] [INVALID] key.json → JSON malformado: Expecting property name enclosed in double quotes: line 1 column 3 (char 2)
+2026-04-27 14:43:36,827 [WARNING] [S3-ERROR] No se pudo descargar key.json: An error occurred (NoSuchKey) when calling the GetObject operation: Not found
