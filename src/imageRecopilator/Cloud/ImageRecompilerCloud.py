@@ -19,6 +19,7 @@ import time
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
 import os
+import sys
 import ssl
 import hashlib
 import signal
@@ -532,6 +533,14 @@ def obtener_menor_tiempo_espera():
     return min(tiempos_validos)
 
 
+def obtener_hora_cierre_maxima() -> datetime:
+    """Retorna el datetime de hoy con la hora de cierre maxima entre todas las plantas."""
+    ahora = datetime.now()
+    tipo = "sabado" if ahora.weekday() == 5 else "semana"
+    hora_max_str = max(HORARIOS[p][tipo][1] for p in HORARIOS)
+    return datetime.combine(ahora.date(), datetime.strptime(hora_max_str, "%H:%M").time())
+
+
 async def esperar_hasta_apertura():
     while RUNNING:
         if es_domingo():
@@ -704,6 +713,98 @@ async def worker_subida_s3(worker_id: int):
 
 
 # =========================
+# Validacion vehicular diaria
+# =========================
+
+async def tarea_validacion_diaria():
+    """
+    Coroutine que lanza validate_vehiculos.py cada dia laboral (lun-sab)
+    5 minutos despues de que cierra la ultima planta del dia.
+    """
+    logger.info("[VAL] Tarea de validacion diaria iniciada")
+    fecha_ultimo_disparo: str | None = None
+    ya_ejecute_hoy = False
+
+    script = os.path.normpath(os.path.join(
+        os.path.dirname(__file__), "..", "..", "..",
+        "scripts", "VehicleRecognition", "validate_vehiculos.py"
+    ))
+
+    while RUNNING:
+        ahora = datetime.now()
+        hoy_str = ahora.strftime("%Y-%m-%d")
+
+        if fecha_ultimo_disparo != hoy_str:
+            ya_ejecute_hoy = False
+
+        if ahora.weekday() == 6:  # domingo
+            await asyncio.sleep(300)
+            continue
+
+        if ya_ejecute_hoy:
+            manana = datetime.combine(ahora.date(), datetime.min.time()) + timedelta(days=1)
+            segundos = int((manana - ahora).total_seconds()) + 60
+            for _ in range(segundos // 60):
+                if not RUNNING:
+                    return
+                await asyncio.sleep(60)
+            continue
+
+        disparo = obtener_hora_cierre_maxima() + timedelta(minutes=5)
+
+        if ahora < disparo:
+            espera = int((disparo - ahora).total_seconds())
+            logger.info(
+                "[VAL] Validacion programada para %s (en %dh %dmin)",
+                disparo.strftime("%H:%M"),
+                espera // 3600,
+                (espera % 3600) // 60,
+            )
+            for _ in range(espera // 60):
+                if not RUNNING:
+                    return
+                await asyncio.sleep(60)
+            residuo = espera % 60
+            if residuo > 0:
+                await asyncio.sleep(residuo)
+            if not RUNNING:
+                return
+
+        prefijo_hoy = ahora.strftime(f"{S3_PREFIX}/%Y/%m/%d/")
+        logger.info("[VAL] Lanzando validacion para prefijo: %s", prefijo_hoy)
+        fecha_ultimo_disparo = hoy_str
+        ya_ejecute_hoy = True  # marcar antes del subprocess para no relanzar si se cancela
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, script,
+                "--prefijo", prefijo_hoy,
+                "--bucket", S3_BUCKET,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            logger.info("[VAL] Subprocess PID=%d iniciado", proc.pid)
+
+            async for linea in proc.stdout:
+                logger.info("[VAL] %s", linea.decode("utf-8", errors="replace").rstrip())
+
+            await proc.wait()
+            if proc.returncode == 0:
+                logger.info("[VAL] Validacion completada exitosamente (PID=%d)", proc.pid)
+            else:
+                logger.warning("[VAL] Validacion termino con codigo %d (PID=%d)", proc.returncode, proc.pid)
+
+        except FileNotFoundError:
+            logger.error("[VAL] No se encontro el script: %s", script)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("[VAL] Error al lanzar subprocess de validacion: %s", exc)
+
+    logger.info("[VAL] Tarea de validacion diaria finalizada")
+
+
+# =========================
 # Captura
 # =========================
 
@@ -845,6 +946,8 @@ async def main():
                 for planta, cam_id in camaras.items()
             ]
 
+            tarea_val = asyncio.create_task(tarea_validacion_diaria())
+
             while RUNNING:
                 await asyncio.sleep(60)
 
@@ -852,8 +955,9 @@ async def main():
 
             for task in tasks_captura:
                 task.cancel()
+            tarea_val.cancel()
 
-            await asyncio.gather(*tasks_captura, return_exceptions=True)
+            await asyncio.gather(*tasks_captura, tarea_val, return_exceptions=True)
 
             if not cola_subida.empty():
                 logger.info("Drenando cola de subida antes de cancelar workers...")

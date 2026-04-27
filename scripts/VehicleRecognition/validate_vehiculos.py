@@ -2,12 +2,12 @@
 Validacion, registro vehicular y visualizacion de capturas en S3.
 
 Recorre el prefijo S3 indicado, detecta vehiculos en cada imagen con YOLOv8,
-escribe un log JSONL con metadata + conteos por tipo, y dibuja los bounding
-boxes sobre las imagenes guardandolas en --destino.
+escribe un log JSONL con metadata + conteos por tipo, y sube las imagenes
+anotadas con bounding boxes directamente a S3 (sin escritura local).
 
 Uso:
     python scripts/VehicleRecognition/validate_vehiculos.py
-    python scripts/VehicleRecognition/validate_vehiculos.py --prefijo capturas/2026/ --salida /ruta/salida.jsonl
+    python scripts/VehicleRecognition/validate_vehiculos.py --prefijo capturas/2026/04/25/
     python scripts/VehicleRecognition/validate_vehiculos.py --bucket otro-bucket --prefijo capturas/2025/04/
 """
 
@@ -20,8 +20,6 @@ import re
 import sys
 import tempfile
 from datetime import datetime
-from logging.handlers import RotatingFileHandler
-from pathlib import Path
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
@@ -34,10 +32,6 @@ from detector import cargar_modelo, detectar_vehiculos  # noqa: E402
 # --- Configuracion por defecto ---
 S3_BUCKET = os.getenv("S3_BUCKET", "flujo-prt-imagenes")
 S3_PREFIJO = os.getenv("S3_PREFIJO", "capturas/2026/")
-LOG_DIR = os.path.join(os.path.dirname(__file__), "logs")
-LOG_JSONL_DEFAULT = os.path.join(LOG_DIR, "registro_vehicular.jsonl")
-LOG_TEXTO = os.path.join(LOG_DIR, "validate_vehiculos.log")
-DESTINO_DEFAULT = str(Path(__file__).parents[3] / "Resultados Captura")
 S3_PREFIJO_ANOTADAS = os.getenv("S3_PREFIJO_ANOTADAS", "capturas_anotadas")
 S3_PREFIJO_LOGS     = os.getenv("S3_PREFIJO_LOGS", "metadata/validate_vehiculos")
 
@@ -63,16 +57,13 @@ def _font():
 
 
 def configurar_logger() -> logging.Logger:
-    os.makedirs(LOG_DIR, exist_ok=True)
     logger = logging.getLogger("validate-vehiculos")
     logger.setLevel(logging.INFO)
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", "%Y-%m-%d %H:%M:%S")
-    fh = RotatingFileHandler(LOG_TEXTO, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8")
-    fh.setFormatter(fmt)
     ch = logging.StreamHandler()
     ch.setFormatter(fmt)
-    logger.addHandler(fh)
-    logger.addHandler(ch)
+    if not logger.handlers:
+        logger.addHandler(ch)
     return logger
 
 
@@ -119,16 +110,9 @@ def construir_conteo(detecciones: list[dict]) -> dict:
     return conteo
 
 
-def ruta_destino_s3(s3_key: str, destino: str) -> str:
-    # "capturas/2026/04/25/Recoleta/img.jpg" → destino/2026/04/25/Recoleta/img.jpg
-    partes = s3_key.split("/")
-    relativa = "/".join(partes[1:])
-    return os.path.join(destino, relativa)
-
-
-def dibujar_boxes(ruta_origen: str, ruta_salida: str, detecciones: list[dict], confianza_min: float) -> None:
-    """Guarda en ruta_salida la imagen con los bounding boxes dibujados."""
-    with Image.open(ruta_origen) as img:
+def dibujar_boxes(datos_imagen: bytes, detecciones: list[dict], confianza_min: float) -> bytes:
+    """Retorna los bytes JPEG de la imagen con bounding boxes dibujados."""
+    with Image.open(io.BytesIO(datos_imagen)) as img:
         img = img.convert("RGB")
         draw = ImageDraw.Draw(img)
         font = _font()
@@ -155,8 +139,9 @@ def dibujar_boxes(ruta_origen: str, ruta_salida: str, detecciones: list[dict], c
             draw.rectangle([tx, ty, tx + tw + 6, ty + th + 4], fill=color)
             draw.text((tx + 3, ty + 2), etiqueta, fill=(255, 255, 255), font=font)
 
-        os.makedirs(os.path.dirname(ruta_salida), exist_ok=True)
-        img.save(ruta_salida, format="JPEG", quality=90)
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=90)
+        return buffer.getvalue()
 
 
 def _clave_anotada(s3_key: str, prefijo_anotadas: str) -> str:
@@ -165,11 +150,14 @@ def _clave_anotada(s3_key: str, prefijo_anotadas: str) -> str:
     return f"{prefijo_anotadas}/{resto}"
 
 
-def _subir_imagen_anotada(s3, bucket: str, ruta_local: str, clave_s3: str, logger: logging.Logger) -> bool:
+def _subir_imagen_anotada(s3, bucket: str, datos_imagen: bytes, clave_s3: str, logger: logging.Logger) -> bool:
     try:
-        s3.upload_file(
-            ruta_local, bucket, clave_s3,
-            ExtraArgs={"ContentType": "image/jpeg", "StorageClass": "INTELLIGENT_TIERING"},
+        s3.put_object(
+            Bucket=bucket,
+            Key=clave_s3,
+            Body=datos_imagen,
+            ContentType="image/jpeg",
+            StorageClass="INTELLIGENT_TIERING",
         )
         return True
     except (BotoCoreError, ClientError) as exc:
@@ -177,11 +165,14 @@ def _subir_imagen_anotada(s3, bucket: str, ruta_local: str, clave_s3: str, logge
         return False
 
 
-def _subir_jsonl(s3, bucket: str, ruta_local: str, clave_s3: str, logger: logging.Logger) -> bool:
+def _subir_jsonl(s3, bucket: str, contenido_jsonl: bytes, clave_s3: str, logger: logging.Logger) -> bool:
     try:
-        s3.upload_file(
-            ruta_local, bucket, clave_s3,
-            ExtraArgs={"ContentType": "application/x-ndjson", "StorageClass": "INTELLIGENT_TIERING"},
+        s3.put_object(
+            Bucket=bucket,
+            Key=clave_s3,
+            Body=contenido_jsonl,
+            ContentType="application/x-ndjson",
+            StorageClass="INTELLIGENT_TIERING",
         )
         return True
     except (BotoCoreError, ClientError) as exc:
@@ -194,7 +185,6 @@ def procesar_objeto(
     s3_client,
     bucket: str,
     obj: dict,
-    destino: str,
     confianza_min: float,
     prefijo_anotadas: str,
     logger: logging.Logger,
@@ -226,6 +216,7 @@ def procesar_objeto(
         registro["ancho_px"] = ancho
         registro["alto_px"] = alto
 
+        # tempfile necesario: ultralytics requiere ruta en disco
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
             tmp.write(datos)
             ruta_tmp = tmp.name
@@ -235,10 +226,9 @@ def procesar_objeto(
             registro["detecciones"] = detecciones
             registro["conteo"] = construir_conteo(detecciones)
 
-            salida_img = ruta_destino_s3(clave, destino)
-            dibujar_boxes(ruta_tmp, salida_img, detecciones, confianza_min)
+            img_anotada_bytes = dibujar_boxes(datos, detecciones, confianza_min)
             clave_anot = _clave_anotada(clave, prefijo_anotadas)
-            if _subir_imagen_anotada(s3_client, bucket, salida_img, clave_anot, logger):
+            if _subir_imagen_anotada(s3_client, bucket, img_anotada_bytes, clave_anot, logger):
                 registro["s3_key_anotada"] = clave_anot
         finally:
             os.unlink(ruta_tmp)
@@ -255,8 +245,6 @@ def main():
     parser = argparse.ArgumentParser(description="Registro vehicular y visualizacion de capturas en S3")
     parser.add_argument("--bucket", default=S3_BUCKET, help="Nombre del bucket S3 (default: flujo-prt-imagenes)")
     parser.add_argument("--prefijo", default=S3_PREFIJO, help="Prefijo S3 a recorrer (default: capturas/2026/)")
-    parser.add_argument("--salida", default=LOG_JSONL_DEFAULT, help="Ruta del archivo JSONL de salida")
-    parser.add_argument("--destino", default=DESTINO_DEFAULT, help="Carpeta raiz donde guardar las imagenes anotadas")
     parser.add_argument(
         "--confianza-min",
         type=float,
@@ -266,10 +254,6 @@ def main():
     args = parser.parse_args()
 
     logger = configurar_logger()
-    salida = os.path.normpath(args.salida)
-    os.makedirs(os.path.dirname(salida), exist_ok=True)
-    os.makedirs(args.destino, exist_ok=True)
-
     s3 = boto3.client("s3")
 
     logger.info("Listando objetos en s3://%s/%s ...", args.bucket, args.prefijo)
@@ -287,32 +271,29 @@ def main():
     logger.info("Imagenes encontradas: %d", total)
     logger.info("Cargando modelo YOLOv8...")
     modelo = cargar_modelo()
-
-    logger.info("Escribiendo log en: %s", salida)
-    logger.info("Guardando imagenes anotadas en: %s", args.destino)
-    logger.info("Subida S3 habilitada (anotadas → %s/, JSONL → %s/)", S3_PREFIJO_ANOTADAS, S3_PREFIJO_LOGS)
+    logger.info("Subida S3: anotadas → %s/, JSONL → %s/", S3_PREFIJO_ANOTADAS, S3_PREFIJO_LOGS)
 
     acum = {"auto": 0, "moto": 0, "bus": 0, "camion": 0, "total": 0, "errores": 0}
+    lineas_jsonl = []
 
-    with open(salida, "w", encoding="utf-8") as f_out:
-        for obj in tqdm(objetos, desc="Procesando", unit="img"):
-            registro = procesar_objeto(
-                modelo, s3, args.bucket, obj,
-                args.destino, args.confianza_min,
-                S3_PREFIJO_ANOTADAS, logger,
-            )
-            f_out.write(json.dumps(registro, ensure_ascii=False) + "\n")
+    for obj in tqdm(objetos, desc="Procesando", unit="img"):
+        registro = procesar_objeto(
+            modelo, s3, args.bucket, obj,
+            args.confianza_min, S3_PREFIJO_ANOTADAS, logger,
+        )
+        lineas_jsonl.append(json.dumps(registro, ensure_ascii=False))
 
-            if registro["error"]:
-                acum["errores"] += 1
-                logger.warning("Error en %s: %s", registro["archivo"], registro["error"])
-            else:
-                for tipo in ("auto", "moto", "bus", "camion", "total"):
-                    acum[tipo] += registro["conteo"][tipo]
+        if registro["error"]:
+            acum["errores"] += 1
+            logger.warning("Error en %s: %s", registro["archivo"], registro["error"])
+        else:
+            for tipo in ("auto", "moto", "bus", "camion", "total"):
+                acum[tipo] += registro["conteo"][tipo]
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     clave_jsonl_s3 = f"{S3_PREFIJO_LOGS}/registro_vehicular_{ts}.jsonl"
-    _subir_jsonl(s3, args.bucket, salida, clave_jsonl_s3, logger)
+    contenido_jsonl = "\n".join(lineas_jsonl).encode("utf-8")
+    _subir_jsonl(s3, args.bucket, contenido_jsonl, clave_jsonl_s3, logger)
 
     logger.info("=" * 50)
     logger.info("Procesamiento completado")
@@ -323,9 +304,7 @@ def main():
     logger.info("  Buses detectados    : %d", acum["bus"])
     logger.info("  Camiones detectados : %d", acum["camion"])
     logger.info("  Total vehiculos     : %d", acum["total"])
-    logger.info("  Log JSONL guardado  : %s", salida)
-    logger.info("  Log JSONL en S3     : s3://%s/%s", args.bucket, clave_jsonl_s3)
-    logger.info("  Imagenes anotadas  : %s", args.destino)
+    logger.info("  JSONL en S3         : s3://%s/%s", args.bucket, clave_jsonl_s3)
     logger.info("=" * 50)
 
 
