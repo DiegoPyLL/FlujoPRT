@@ -222,6 +222,8 @@ python3 --version   # debe ser 3.9+
 pip3 --version
 ```
 
+> **Nota:** Para el subsistema de reconocimiento vehicular se requiere adicionalmente: `pip install ultralytics tqdm`. El modelo `yolov8m.pt` (~50 MB) se descarga automaticamente la primera vez.
+
 ---
 
 ## 5. Clonar el repositorio
@@ -230,11 +232,11 @@ pip3 --version
 git clone https://github.com/DiegoPyLL/FlujoPRT
 cd FlujoPRT
 
-# Dependencias del runtime de captura
-pip install --user -r deploy/requirements.txt
+# Dependencias necesarias para el proyecto
+pip install --user -r deploy/requirements.cloud.txt
 
-# Dependencias del dashboard
-pip install --user -r scripts/requirements.txt
+# Dependencias del subsistema vehicular (opcional, solo si se usara VehicleRecognition)
+pip install --user ultralytics tqdm
 ```
 
 Si usaste **usuario IAM con claves** (paso 1.3) en lugar de rol, configurar credenciales ahora:
@@ -317,6 +319,29 @@ python3 scripts/validate_metadata.py
 # Desconectarse: Ctrl+B, luego D
 ```
 
+### Sesion 4 — Reconocimiento vehicular (opcional)
+
+Procesa el historico de imagenes S3 detectando vehiculos con YOLOv8. Solo es necesario correrlo una vez para poner al dia el backlog; luego se puede ejecutar periodicamente para las capturas nuevas.
+
+```bash
+tmux new -s FlujoPRT_VehicleDetection
+cd ~/FlujoPRT
+
+# Primera ejecucion: analisis incremental (omite lo ya procesado)
+python3 scripts/VehicleRecognition/analisis_historico.py
+
+# Rango especifico de fechas
+python3 scripts/VehicleRecognition/analisis_historico.py \
+    --fecha-inicio 2026-04-01 --fecha-fin 2026-04-30
+
+# Validador con bbox (genera imagenes anotadas y JSONL)
+python3 scripts/VehicleRecognition/validate_vehiculos.py \
+    --prefijo capturas/2026/04/
+
+# Desconectarse: Ctrl+B, luego D
+tmux attach -t FlujoPRT_VehicleDetection
+```
+
 ---
 
 ## 8. Verificar que el sistema esta capturando
@@ -327,6 +352,12 @@ aws s3 ls s3://flujo-prt-imagenes/capturas/$(date +%Y/%m/%d)/
 
 # Metadata generada hoy
 aws s3 ls s3://flujo-prt-imagenes/metadata/capturas/$(date +%Y/%m/%d)/
+
+# Detecciones vehiculares generadas hoy
+aws s3 ls s3://flujo-prt-imagenes/metadata/detecciones/$(date +%Y/%m/%d)/
+
+# Imagenes con bounding boxes
+aws s3 ls s3://flujo-prt-imagenes/capturas_anotadas/$(date +%Y/%m/%d)/
 
 # Catalogo de plantas subido al iniciar
 aws s3 cp s3://flujo-prt-imagenes/metadata/plantas/catalogo_plantas.json -
@@ -435,11 +466,13 @@ tmux ls
 tmux attach -t FlujoPRT_CCTV
 tmux attach -t FlujoPRT_Dashboard
 tmux attach -t FlujoPRT_CCTV_Validator
+tmux attach -t FlujoPRT_VehicleDetection
 
 # Matar sesiones (para reiniciar procesos)
 tmux kill-session -t FlujoPRT_CCTV
 tmux kill-session -t FlujoPRT_Dashboard
 tmux kill-session -t FlujoPRT_CCTV_Validator
+tmux kill-session -t FlujoPRT_VehicleDetection
 
 # Reiniciar captura
 tmux new -s FlujoPRT_CCTV
