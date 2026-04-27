@@ -35,6 +35,8 @@ S3_PREFIJO = os.getenv("S3_PREFIJO", "capturas/2026/")
 S3_PREFIJO_ANOTADAS = os.getenv("S3_PREFIJO_ANOTADAS", "capturas_anotadas")
 S3_PREFIJO_LOGS     = os.getenv("S3_PREFIJO_LOGS", "metadata/validate_vehiculos")
 
+MULTIPART_CHUNK_SIZE = 5 * 1024 * 1024  # 5 MB — minimo por parte intermedia en S3
+
 PATRON_ARCHIVO = re.compile(r"^([A-Z]{2,3})_(\d{8})_(\d{6})\.jpg$", re.IGNORECASE)
 
 # --- Constantes de dibujo ---
@@ -165,19 +167,41 @@ def _subir_imagen_anotada(s3, bucket: str, datos_imagen: bytes, clave_s3: str, l
         return False
 
 
-def _subir_jsonl(s3, bucket: str, contenido_jsonl: bytes, clave_s3: str, logger: logging.Logger) -> bool:
+def _iniciar_multipart(s3, bucket: str, clave_s3: str) -> str:
+    resp = s3.create_multipart_upload(
+        Bucket=bucket,
+        Key=clave_s3,
+        ContentType="application/x-ndjson",
+        StorageClass="INTELLIGENT_TIERING",
+    )
+    return resp["UploadId"]
+
+
+def _subir_parte(s3, bucket: str, clave_s3: str, upload_id: str, numero: int, datos: bytes) -> dict:
+    resp = s3.upload_part(
+        Bucket=bucket,
+        Key=clave_s3,
+        UploadId=upload_id,
+        PartNumber=numero,
+        Body=datos,
+    )
+    return {"PartNumber": numero, "ETag": resp["ETag"]}
+
+
+def _completar_multipart(s3, bucket: str, clave_s3: str, upload_id: str, partes: list[dict]) -> None:
+    s3.complete_multipart_upload(
+        Bucket=bucket,
+        Key=clave_s3,
+        UploadId=upload_id,
+        MultipartUpload={"Parts": partes},
+    )
+
+
+def _abortar_multipart(s3, bucket: str, clave_s3: str, upload_id: str, logger: logging.Logger) -> None:
     try:
-        s3.put_object(
-            Bucket=bucket,
-            Key=clave_s3,
-            Body=contenido_jsonl,
-            ContentType="application/x-ndjson",
-            StorageClass="INTELLIGENT_TIERING",
-        )
-        return True
-    except (BotoCoreError, ClientError) as exc:
-        logger.warning("[S3] No se pudo subir JSONL '%s': %s", clave_s3, exc)
-        return False
+        s3.abort_multipart_upload(Bucket=bucket, Key=clave_s3, UploadId=upload_id)
+    except Exception as exc:
+        logger.warning("[S3] No se pudo abortar multipart '%s': %s", clave_s3, exc)
 
 
 def procesar_objeto(
@@ -273,27 +297,46 @@ def main():
     modelo = cargar_modelo()
     logger.info("Subida S3: anotadas → %s/, JSONL → %s/", S3_PREFIJO_ANOTADAS, S3_PREFIJO_LOGS)
 
-    acum = {"auto": 0, "moto": 0, "bus": 0, "camion": 0, "total": 0, "errores": 0}
-    lineas_jsonl = []
-
-    for obj in tqdm(objetos, desc="Procesando", unit="img"):
-        registro = procesar_objeto(
-            modelo, s3, args.bucket, obj,
-            args.confianza_min, S3_PREFIJO_ANOTADAS, logger,
-        )
-        lineas_jsonl.append(json.dumps(registro, ensure_ascii=False))
-
-        if registro["error"]:
-            acum["errores"] += 1
-            logger.warning("Error en %s: %s", registro["archivo"], registro["error"])
-        else:
-            for tipo in ("auto", "moto", "bus", "camion", "total"):
-                acum[tipo] += registro["conteo"][tipo]
-
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     clave_jsonl_s3 = f"{S3_PREFIJO_LOGS}/registro_vehicular_{ts}.jsonl"
-    contenido_jsonl = "\n".join(lineas_jsonl).encode("utf-8")
-    _subir_jsonl(s3, args.bucket, contenido_jsonl, clave_jsonl_s3, logger)
+    upload_id = _iniciar_multipart(s3, args.bucket, clave_jsonl_s3)
+    logger.info("[S3] Multipart iniciado: %s", clave_jsonl_s3)
+
+    acum = {"auto": 0, "moto": 0, "bus": 0, "camion": 0, "total": 0, "errores": 0}
+    partes: list[dict] = []
+    numero_parte = 1
+    buffer = io.BytesIO()
+
+    try:
+        for obj in tqdm(objetos, desc="Procesando", unit="img"):
+            registro = procesar_objeto(
+                modelo, s3, args.bucket, obj,
+                args.confianza_min, S3_PREFIJO_ANOTADAS, logger,
+            )
+            buffer.write((json.dumps(registro, ensure_ascii=False) + "\n").encode("utf-8"))
+
+            if registro["error"]:
+                acum["errores"] += 1
+                logger.warning("Error en %s: %s", registro["archivo"], registro["error"])
+            else:
+                for tipo in ("auto", "moto", "bus", "camion", "total"):
+                    acum[tipo] += registro["conteo"][tipo]
+
+            if buffer.tell() >= MULTIPART_CHUNK_SIZE:
+                partes.append(_subir_parte(s3, args.bucket, clave_jsonl_s3, upload_id, numero_parte, buffer.getvalue()))
+                logger.debug("[S3] Parte %d subida (%d bytes)", numero_parte, buffer.tell())
+                numero_parte += 1
+                buffer = io.BytesIO()
+
+        datos_finales = buffer.getvalue()
+        if datos_finales:
+            partes.append(_subir_parte(s3, args.bucket, clave_jsonl_s3, upload_id, numero_parte, datos_finales))
+
+        _completar_multipart(s3, args.bucket, clave_jsonl_s3, upload_id, partes)
+
+    except Exception:
+        _abortar_multipart(s3, args.bucket, clave_jsonl_s3, upload_id, logger)
+        raise
 
     logger.info("=" * 50)
     logger.info("Procesamiento completado")
@@ -304,7 +347,7 @@ def main():
     logger.info("  Buses detectados    : %d", acum["bus"])
     logger.info("  Camiones detectados : %d", acum["camion"])
     logger.info("  Total vehiculos     : %d", acum["total"])
-    logger.info("  JSONL en S3         : s3://%s/%s", args.bucket, clave_jsonl_s3)
+    logger.info("  JSONL en S3         : s3://%s/%s (%d parte(s))", args.bucket, clave_jsonl_s3, len(partes))
     logger.info("=" * 50)
 
 
