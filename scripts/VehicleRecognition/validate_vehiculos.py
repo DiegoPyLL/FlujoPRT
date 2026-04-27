@@ -2,8 +2,16 @@
 Validacion, registro vehicular y visualizacion de capturas en S3.
 
 Recorre el prefijo S3 indicado, detecta vehiculos en cada imagen con YOLOv8,
-escribe un log JSONL con metadata + conteos por tipo, y sube las imagenes
+escribe un JSONL por planta por dia con metadata + conteos, y sube las imagenes
 anotadas con bounding boxes directamente a S3 (sin escritura local).
+
+La ejecucion es idempotente: si el JSONL de una planta ya existe en S3 (ejecucion
+previa interrumpida), se cargan los registros previos y solo se procesan las imagenes
+faltantes. El JSONL resultante combina los registros existentes con los nuevos.
+
+Rutas S3:
+  Imagenes anotadas : capturas_anotadas/YYYY/MM/DD/{Planta}/{DENOM}_YYYYMMDD_HHMMSS.jpg
+  JSONL por planta  : metadata/capturas/YYYY/MM/DD/{Planta}/{DENOM}_YYYYMMDD.jsonl
 
 Uso:
     python scripts/VehicleRecognition/validate_vehiculos.py
@@ -30,14 +38,29 @@ sys.path.insert(0, os.path.dirname(__file__))
 from detector import cargar_modelo, detectar_vehiculos  # noqa: E402
 
 # --- Configuracion por defecto ---
-S3_BUCKET = os.getenv("S3_BUCKET", "flujo-prt-imagenes")
-S3_PREFIJO = os.getenv("S3_PREFIJO", "capturas/2026/")
+S3_BUCKET           = os.getenv("S3_BUCKET", "flujo-prt-imagenes")
+S3_PREFIJO          = os.getenv("S3_PREFIJO", "capturas/2026/")
 S3_PREFIJO_ANOTADAS = os.getenv("S3_PREFIJO_ANOTADAS", "capturas_anotadas")
-S3_PREFIJO_LOGS     = os.getenv("S3_PREFIJO_LOGS", "metadata/validate_vehiculos")
-
-MULTIPART_CHUNK_SIZE = 5 * 1024 * 1024  # 5 MB — minimo por parte intermedia en S3
+S3_PREFIJO_JSONL    = os.getenv("S3_PREFIJO_JSONL", "metadata/capturas")
 
 PATRON_ARCHIVO = re.compile(r"^([A-Z]{2,3})_(\d{8})_(\d{6})\.jpg$", re.IGNORECASE)
+
+DENOMINADORES = {
+    "Huechuraba":        "HCH",
+    "La Florida":        "LFL",
+    "La Pintana":        "LPT",
+    "Pudahuel":          "PUD",
+    "Quilicura":         "QLC",
+    "Recoleta":          "RCL",
+    "San Joaquin":       "SJQ",
+    "Temuco":            "TMU",
+    "Villarica":         "VLL",
+    "Chillan":           "CHL",
+    "Yungay":            "YGY",
+    "Concepcion":        "CCP",
+    "San Pedro de la Paz": "SPP",
+    "Yumbel":            "YMB",
+}
 
 # --- Constantes de dibujo ---
 COLOR_TIPO = {
@@ -84,7 +107,7 @@ def listar_objetos_s3(s3_client, bucket: str, prefijo: str) -> list[dict]:
 
 
 def parsear_nombre(nombre: str) -> dict:
-    """Extrae planta, fecha y hora del nombre de archivo."""
+    """Extrae fecha y hora del nombre de archivo."""
     m = PATRON_ARCHIVO.match(nombre)
     if not m:
         return {}
@@ -92,6 +115,20 @@ def parsear_nombre(nombre: str) -> dict:
     fecha = f"{fecha_str[:4]}-{fecha_str[4:6]}-{fecha_str[6:]}"
     hora = f"{hora_str[:2]}:{hora_str[2:4]}:{hora_str[4:]}"
     return {"planta_codigo": codigo.upper(), "fecha": fecha, "hora": hora, "timestamp_imagen": f"{fecha}T{hora}"}
+
+
+def planta_desde_clave(clave: str) -> str:
+    """capturas/YYYY/MM/DD/Planta/img.jpg → 'Planta'"""
+    partes = clave.split("/")
+    return partes[3] if len(partes) > 3 else "desconocida"
+
+
+def fecha_desde_prefijo(prefijo: str) -> str:
+    """capturas/YYYY/MM/DD/ → 'YYYY/MM/DD'"""
+    partes = prefijo.strip("/").split("/")
+    if len(partes) >= 4:
+        return "/".join(partes[1:4])
+    raise ValueError(f"Prefijo inesperado: '{prefijo}'. Se esperaba capturas/YYYY/MM/DD/")
 
 
 def dimensiones_desde_bytes(datos: bytes) -> tuple[int, int]:
@@ -152,6 +189,13 @@ def _clave_anotada(s3_key: str, prefijo_anotadas: str) -> str:
     return f"{prefijo_anotadas}/{resto}"
 
 
+def _clave_jsonl_planta(prefijo_jsonl: str, fecha_ymd: str, planta: str) -> str:
+    """metadata/capturas/YYYY/MM/DD/{Planta}/{DENOM}_YYYYMMDD.jsonl"""
+    denom = DENOMINADORES.get(planta, planta.replace(" ", "_"))
+    fecha_compact = fecha_ymd.replace("/", "")
+    return f"{prefijo_jsonl}/{fecha_ymd}/{planta}/{denom}_{fecha_compact}.jsonl"
+
+
 def _subir_imagen_anotada(s3, bucket: str, datos_imagen: bytes, clave_s3: str, logger: logging.Logger) -> bool:
     try:
         s3.put_object(
@@ -167,41 +211,30 @@ def _subir_imagen_anotada(s3, bucket: str, datos_imagen: bytes, clave_s3: str, l
         return False
 
 
-def _iniciar_multipart(s3, bucket: str, clave_s3: str) -> str:
-    resp = s3.create_multipart_upload(
+def _cargar_jsonl_existente(s3, bucket: str, clave: str) -> tuple[list[dict], set[str]]:
+    """Carga un JSONL de S3. Retorna (registros, set de s3_keys ya procesadas)."""
+    try:
+        resp = s3.get_object(Bucket=bucket, Key=clave)
+        contenido = resp["Body"].read().decode("utf-8")
+        registros = [json.loads(ln) for ln in contenido.splitlines() if ln.strip()]
+        claves_procesadas = {r["s3_key"] for r in registros if "s3_key" in r}
+        return registros, claves_procesadas
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] in ("NoSuchKey", "404"):
+            return [], set()
+        raise
+
+
+def _subir_jsonl(s3, bucket: str, clave: str, registros: list[dict], logger: logging.Logger) -> None:
+    contenido = "\n".join(json.dumps(r, ensure_ascii=False) for r in registros) + "\n"
+    s3.put_object(
         Bucket=bucket,
-        Key=clave_s3,
+        Key=clave,
+        Body=contenido.encode("utf-8"),
         ContentType="application/x-ndjson",
         StorageClass="INTELLIGENT_TIERING",
     )
-    return resp["UploadId"]
-
-
-def _subir_parte(s3, bucket: str, clave_s3: str, upload_id: str, numero: int, datos: bytes) -> dict:
-    resp = s3.upload_part(
-        Bucket=bucket,
-        Key=clave_s3,
-        UploadId=upload_id,
-        PartNumber=numero,
-        Body=datos,
-    )
-    return {"PartNumber": numero, "ETag": resp["ETag"]}
-
-
-def _completar_multipart(s3, bucket: str, clave_s3: str, upload_id: str, partes: list[dict]) -> None:
-    s3.complete_multipart_upload(
-        Bucket=bucket,
-        Key=clave_s3,
-        UploadId=upload_id,
-        MultipartUpload={"Parts": partes},
-    )
-
-
-def _abortar_multipart(s3, bucket: str, clave_s3: str, upload_id: str, logger: logging.Logger) -> None:
-    try:
-        s3.abort_multipart_upload(Bucket=bucket, Key=clave_s3, UploadId=upload_id)
-    except Exception as exc:
-        logger.warning("[S3] No se pudo abortar multipart '%s': %s", clave_s3, exc)
+    logger.info("[S3] JSONL subido: %s (%d registros)", clave, len(registros))
 
 
 def procesar_objeto(
@@ -212,6 +245,7 @@ def procesar_objeto(
     confianza_min: float,
     prefijo_anotadas: str,
     logger: logging.Logger,
+    planta: str = "",
 ) -> dict:
     """Descarga el objeto S3, detecta vehiculos, dibuja boxes y genera el registro JSONL."""
     clave = obj["clave"]
@@ -221,6 +255,7 @@ def procesar_objeto(
     registro = {
         "archivo": nombre,
         "s3_key": clave,
+        "planta": planta,
         **meta,
         "bytes_archivo": obj["tamano"],
         "ancho_px": 0,
@@ -266,7 +301,7 @@ def procesar_objeto(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Registro vehicular y visualizacion de capturas en S3")
+    parser = argparse.ArgumentParser(description="Registro vehicular por planta y visualizacion de capturas en S3")
     parser.add_argument("--bucket", default=S3_BUCKET, help="Nombre del bucket S3 (default: flujo-prt-imagenes)")
     parser.add_argument("--prefijo", default=S3_PREFIJO, help="Prefijo S3 a recorrer (default: capturas/2026/)")
     parser.add_argument(
@@ -280,6 +315,12 @@ def main():
     logger = configurar_logger()
     s3 = boto3.client("s3")
 
+    try:
+        fecha_ymd = fecha_desde_prefijo(args.prefijo)
+    except ValueError as exc:
+        logger.error("%s", exc)
+        sys.exit(1)
+
     logger.info("Listando objetos en s3://%s/%s ...", args.bucket, args.prefijo)
     try:
         objetos = listar_objetos_s3(s3, args.bucket, args.prefijo)
@@ -292,62 +333,71 @@ def main():
         logger.warning("No se encontraron imagenes con el patron esperado en el prefijo.")
         sys.exit(0)
 
-    logger.info("Imagenes encontradas: %d", total)
+    # Agrupar por planta usando el path S3 (más robusto que el regex del nombre)
+    por_planta: dict[str, list[dict]] = {}
+    for obj in objetos:
+        planta = planta_desde_clave(obj["clave"])
+        por_planta.setdefault(planta, []).append(obj)
+
+    logger.info("Imagenes encontradas: %d en %d planta(s)", total, len(por_planta))
     logger.info("Cargando modelo YOLOv8...")
     modelo = cargar_modelo()
-    logger.info("Subida S3: anotadas → %s/, JSONL → %s/", S3_PREFIJO_ANOTADAS, S3_PREFIJO_LOGS)
+    logger.info("Anotadas → %s/  |  JSONL → %s/", S3_PREFIJO_ANOTADAS, S3_PREFIJO_JSONL)
 
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    clave_jsonl_s3 = f"{S3_PREFIJO_LOGS}/registro_vehicular_{ts}.jsonl"
-    upload_id = _iniciar_multipart(s3, args.bucket, clave_jsonl_s3)
-    logger.info("[S3] Multipart iniciado: %s", clave_jsonl_s3)
+    acum = {"auto": 0, "moto": 0, "bus": 0, "camion": 0, "total": 0, "errores": 0, "nuevas": 0, "saltadas": 0}
 
-    acum = {"auto": 0, "moto": 0, "bus": 0, "camion": 0, "total": 0, "errores": 0}
-    partes: list[dict] = []
-    numero_parte = 1
-    buffer = io.BytesIO()
+    for planta, objs_planta in sorted(por_planta.items()):
+        clave_jsonl = _clave_jsonl_planta(S3_PREFIJO_JSONL, fecha_ymd, planta)
+        registros_previos, claves_previas = _cargar_jsonl_existente(s3, args.bucket, clave_jsonl)
 
-    try:
-        for obj in tqdm(objetos, desc="Procesando", unit="img"):
+        pendientes = [o for o in objs_planta if o["clave"] not in claves_previas]
+        logger.info(
+            "[%s] total=%d  ya procesadas=%d  pendientes=%d",
+            planta, len(objs_planta), len(claves_previas), len(pendientes),
+        )
+
+        nuevos: list[dict] = []
+        acum_planta = {"auto": 0, "moto": 0, "bus": 0, "camion": 0, "total": 0, "errores": 0}
+
+        for obj in tqdm(pendientes, desc=planta, unit="img"):
             registro = procesar_objeto(
                 modelo, s3, args.bucket, obj,
                 args.confianza_min, S3_PREFIJO_ANOTADAS, logger,
+                planta=planta,
             )
-            buffer.write((json.dumps(registro, ensure_ascii=False) + "\n").encode("utf-8"))
-
+            nuevos.append(registro)
             if registro["error"]:
-                acum["errores"] += 1
+                acum_planta["errores"] += 1
                 logger.warning("Error en %s: %s", registro["archivo"], registro["error"])
             else:
                 for tipo in ("auto", "moto", "bus", "camion", "total"):
-                    acum[tipo] += registro["conteo"][tipo]
+                    acum_planta[tipo] += registro["conteo"][tipo]
 
-            if buffer.tell() >= MULTIPART_CHUNK_SIZE:
-                partes.append(_subir_parte(s3, args.bucket, clave_jsonl_s3, upload_id, numero_parte, buffer.getvalue()))
-                logger.debug("[S3] Parte %d subida (%d bytes)", numero_parte, buffer.tell())
-                numero_parte += 1
-                buffer = io.BytesIO()
+        todos = registros_previos + nuevos
+        if todos:
+            _subir_jsonl(s3, args.bucket, clave_jsonl, todos, logger)
 
-        datos_finales = buffer.getvalue()
-        if datos_finales:
-            partes.append(_subir_parte(s3, args.bucket, clave_jsonl_s3, upload_id, numero_parte, datos_finales))
+        for k in ("auto", "moto", "bus", "camion", "total", "errores"):
+            acum[k] += acum_planta[k]
+        acum["nuevas"] += len(nuevos)
+        acum["saltadas"] += len(claves_previas)
 
-        _completar_multipart(s3, args.bucket, clave_jsonl_s3, upload_id, partes)
-
-    except Exception:
-        _abortar_multipart(s3, args.bucket, clave_jsonl_s3, upload_id, logger)
-        raise
+        logger.info(
+            "[%s] nuevas=%d  saltadas=%d  vehiculos=%d  errores=%d",
+            planta, len(nuevos), len(claves_previas), acum_planta["total"], acum_planta["errores"],
+        )
 
     logger.info("=" * 50)
     logger.info("Procesamiento completado")
-    logger.info("  Imagenes procesadas : %d", total)
+    logger.info("  Plantas procesadas  : %d", len(por_planta))
+    logger.info("  Imagenes nuevas     : %d", acum["nuevas"])
+    logger.info("  Imagenes saltadas   : %d", acum["saltadas"])
     logger.info("  Errores             : %d", acum["errores"])
     logger.info("  Autos detectados    : %d", acum["auto"])
     logger.info("  Motos detectadas    : %d", acum["moto"])
     logger.info("  Buses detectados    : %d", acum["bus"])
     logger.info("  Camiones detectados : %d", acum["camion"])
     logger.info("  Total vehiculos     : %d", acum["total"])
-    logger.info("  JSONL en S3         : s3://%s/%s (%d parte(s))", args.bucket, clave_jsonl_s3, len(partes))
     logger.info("=" * 50)
 
 

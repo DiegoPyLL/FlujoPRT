@@ -511,17 +511,17 @@ Procesa todas las imagenes bajo un prefijo S3, genera un JSONL con conteos por i
 # Procesar capturas de 2026 (configuracion por defecto)
 python scripts/VehicleRecognition/validate_vehiculos.py
 
-# Rango especifico
-python scripts/VehicleRecognition/validate_vehiculos.py \
-    --prefijo capturas/2026/04/ \
-    --salida scripts/VehicleRecognition/logs/mi_log.jsonl
+# Prefijo especifico (dia o mes)
+python scripts/VehicleRecognition/validate_vehiculos.py --prefijo capturas/2026/04/
 
-# Solo generar JSONL sin dibujar boxes (mas rapido)
-python scripts/VehicleRecognition/validate_vehiculos.py --sin-dibujo
+# Umbral de confianza para dibujar boxes (0.0 dibuja todos, 0.55 filtra ruido)
+python scripts/VehicleRecognition/validate_vehiculos.py --confianza-min 0.55
 
-# Sin subir nada a S3 (modo local)
-python scripts/VehicleRecognition/validate_vehiculos.py --sin-s3
+# Otro bucket
+python scripts/VehicleRecognition/validate_vehiculos.py --bucket mi-bucket-pruebas
 ```
+
+El JSONL y las imagenes anotadas se suben directamente a S3 via multipart upload (sin escritura local).
 
 **Variables de entorno:**
 

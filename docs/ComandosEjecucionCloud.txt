@@ -51,7 +51,20 @@ asegurarse de crear el ec2 y s3 en la misma region
               python3 scripts/validate_metadata.py
 
        *   Comando de ejecución FlujoPRT_CCTV_VehicleCounter:
+              sudo apt-get install -y libgl1-mesa-glx
+              pip install ultralytics tqdm Pillow boto3
+
+              # Configuracion por defecto (todo capturas/2026/)
               python3 scripts/VehicleRecognition/validate_vehiculos.py
+
+              # Prefijo especifico (dia o mes)
+              python3 scripts/VehicleRecognition/validate_vehiculos.py --prefijo capturas/2026/04/25/
+
+              # Con umbral de confianza para boxes (0.55 filtra ruido bajo)
+              python3 scripts/VehicleRecognition/validate_vehiculos.py --confianza-min 0.55
+
+              # Las imagenes anotadas se suben a: s3://flujo-prt-imagenes/capturas_anotadas/
+              # El log JSONL se sube a:           s3://flujo-prt-imagenes/metadata/validate_vehiculos/
 
        *   Volver a entrar a la sesión:
               tmux attach -t FlujoPRT_CCTV

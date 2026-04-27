@@ -65,20 +65,17 @@ Recorre un prefijo S3, descarga cada imagen, detecta vehiculos, dibuja bounding 
 # Configuracion por defecto (bucket=flujo-prt-imagenes, prefijo=capturas/2026/)
 python scripts/VehicleRecognition/validate_vehiculos.py
 
-# Prefijo especifico
-python scripts/VehicleRecognition/validate_vehiculos.py \
-    --prefijo capturas/2026/04/ \
-    --salida scripts/VehicleRecognition/logs/abril.jsonl
+# Prefijo especifico (dia o mes)
+python scripts/VehicleRecognition/validate_vehiculos.py --prefijo capturas/2026/04/
 
-# Solo JSONL, sin dibujar ni subir imagenes anotadas
-python scripts/VehicleRecognition/validate_vehiculos.py --sin-dibujo
-
-# Sin subida a S3 (modo completamente local)
-python scripts/VehicleRecognition/validate_vehiculos.py --sin-s3
+# Umbral de confianza para dibujar boxes (0.0 dibuja todos, 0.55 filtra ruido)
+python scripts/VehicleRecognition/validate_vehiculos.py --confianza-min 0.55
 
 # Otro bucket
 python scripts/VehicleRecognition/validate_vehiculos.py --bucket mi-bucket-pruebas
 ```
+
+El log JSONL y las imagenes anotadas se suben directamente a S3 (sin escritura local). El JSONL se escribe en partes de 5 MB via multipart upload.
 
 ### Argumentos CLI
 
@@ -86,11 +83,7 @@ python scripts/VehicleRecognition/validate_vehiculos.py --bucket mi-bucket-prueb
 |-----------|---------|-------------|
 | `--bucket` | `flujo-prt-imagenes` | Bucket S3 |
 | `--prefijo` | `capturas/2026/` | Prefijo S3 a recorrer |
-| `--salida` | `logs/registro_vehicular.jsonl` | Ruta del JSONL de salida |
-| `--destino` | `../../Resultados Captura` | Carpeta raiz para imagenes anotadas locales |
 | `--confianza-min` | `0.0` | Umbral minimo de confianza para dibujar box |
-| `--sin-dibujo` | false | Omite el dibujado de boxes |
-| `--sin-s3` | false | Omite toda subida a S3 |
 
 ### Variables de Entorno
 
