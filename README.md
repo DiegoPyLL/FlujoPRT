@@ -82,7 +82,6 @@ FlujoPRT/
 │   └── run.sh                            # Script de ejecucion en EC2
 ├── scripts/
 │   ├── realtime_dashboard.py             # Dashboard Streamlit (lectura S3)
-│   ├── validate_metadata.py              # Validador de metadata JSON
 │   └── VehicleRecognition/              # Subsistema de reconocimiento vehicular
 │       ├── detector.py                   # Wrapper YOLOv8 para deteccion de vehiculos
 │       ├── validate_vehiculos.py         # Validador con bbox y log JSONL

@@ -32,15 +32,6 @@ class TestS3Keys:
         key = cloud.generar_s3_key("Huechuraba", "20260423_080000")
         assert key.startswith("capturas/") and "HCH_" in key
 
-    def test_generar_s3_key_metadata_valida(self):
-        key = cloud.generar_s3_key_metadata("Villarica", "20260117_230000")
-        assert key == "metadata/capturas/2026/01/17/Villarica/VLL_20260117_230000.json"
-
-    def test_generar_s3_key_metadata_con_prefix_custom(self):
-        key = cloud.generar_s3_key_metadata("Temuco", "20260301_100000", prefix="alt_meta")
-        assert key.startswith("alt_meta/capturas/")
-        assert key.endswith("TMU_20260301_100000.json")
-
 
 # ---------------------------------------------------------------------------
 # Hash de imágenes
@@ -146,89 +137,6 @@ class TestMetricas:
         assert m.bytes_comprimidos == 300
         assert m.total_subidas == 2
 
-
-# ---------------------------------------------------------------------------
-# Generación y subida de metadata
-# ---------------------------------------------------------------------------
-
-@pytest.mark.imageRecopilator
-class TestMetadata:
-
-    def test_generar_metadata_captura_campos_requeridos(self):
-        meta = cloud.generar_metadata_captura(
-            "Huechuraba", "20260423_100000",
-            "capturas/2026/04/23/Huechuraba/HCH_20260423_100000.jpg",
-            100000, 50000, "mi-bucket"
-        )
-        assert meta["version"] == "1"
-        assert meta["planta_id"] == "HCH"
-        assert meta["planta_nombre"] == "Huechuraba"
-        assert meta["s3_bucket"] == "mi-bucket"
-        assert meta["bytes_originales"] == 100000
-        assert meta["bytes_comprimidos"] == 50000
-        assert meta["s3_imagen_key"].endswith(".jpg")
-
-    def test_generar_metadata_captura_ratio_calculado(self):
-        meta = cloud.generar_metadata_captura(
-            "Temuco", "20260423_100000", "key.jpg", 1000, 500, "bucket"
-        )
-        assert meta["ratio_compresion"] == 0.5
-
-    def test_generar_metadata_captura_ratio_nulo_cuando_bytes_cero(self):
-        meta = cloud.generar_metadata_captura(
-            "Temuco", "20260423_100000", "key.jpg", 0, 0, "bucket"
-        )
-        assert meta["ratio_compresion"] is None
-
-    def test_generar_metadata_captura_timestamp_iso(self):
-        meta = cloud.generar_metadata_captura(
-            "Chillan", "20260423_153000", "key.jpg", 100, 80, "bucket"
-        )
-        assert meta["timestamp_captura"] == "2026-04-23T15:30:00"
-
-    def test_generar_metadata_captura_sin_ec2_info(self):
-        original_cache = cloud._ec2_metadata_cache
-        cloud._ec2_metadata_cache = None
-        try:
-            meta = cloud.generar_metadata_captura(
-                "Concepcion", "20260423_100000", "key.jpg", 100, 80, "bucket"
-            )
-            assert meta["instancia_ec2"] is None
-        finally:
-            cloud._ec2_metadata_cache = original_cache
-
-    def test_generar_metadata_captura_con_ec2_info(self):
-        original_cache = cloud._ec2_metadata_cache
-        cloud._ec2_metadata_cache = {
-            "instance_id": "i-0abc123",
-            "instance_type": "t3.micro"
-        }
-        try:
-            meta = cloud.generar_metadata_captura(
-                "Concepcion", "20260423_100000", "key.jpg", 100, 80, "bucket"
-            )
-            assert meta["instancia_ec2"] == {
-                "instance_id": "i-0abc123",
-                "instance_type": "t3.micro"
-            }
-        finally:
-            cloud._ec2_metadata_cache = original_cache
-
-    @pytest.mark.asyncio
-    async def test_subir_json_s3_exitoso(self):
-        mock_s3 = AsyncMock()
-        resultado = await cloud.subir_json_s3(mock_s3, "bucket", "key.json", {"k": "v"})
-        assert resultado is True
-        mock_s3.put_object.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_subir_json_s3_error_cliente(self):
-        mock_s3 = AsyncMock()
-        mock_s3.put_object.side_effect = ClientError(
-            {"Error": {"Code": "AccessDenied", "Message": "Denied"}}, "PutObject"
-        )
-        resultado = await cloud.subir_json_s3(mock_s3, "bucket", "key.json", {"k": "v"})
-        assert resultado is False
 
 
 # ---------------------------------------------------------------------------
@@ -420,8 +328,7 @@ async def test_worker_s3_procesa_cola():
     )
 
     with patch('aioboto3.Session') as mock_session_cls, \
-         patch('imageRecopilator.Cloud.ImageRecompilerCloud.metricas.registrar_subida', new_callable=AsyncMock), \
-         patch('imageRecopilator.Cloud.ImageRecompilerCloud.subir_metadata_captura', new_callable=AsyncMock):
+         patch('imageRecopilator.Cloud.ImageRecompilerCloud.metricas.registrar_subida', new_callable=AsyncMock):
 
         mock_s3 = AsyncMock()
         mock_session = MagicMock()
@@ -440,44 +347,8 @@ async def test_worker_s3_procesa_cola():
         mock_s3.put_object.assert_called_once()
 
 
-# ---------------------------------------------------------------------------
-# subir_metadata_captura
-# ---------------------------------------------------------------------------
 
 _MOD_CLOUD = 'imageRecopilator.Cloud.ImageRecompilerCloud'
-
-
-@pytest.mark.imageRecopilator
-class TestSubirMetadataCaptura:
-
-    @pytest.mark.asyncio
-    async def test_subida_exitosa_no_lanza_excepcion(self):
-        mock_s3 = AsyncMock()
-        with patch(f'{_MOD_CLOUD}.subir_json_s3', new_callable=AsyncMock, return_value=True):
-            await cloud.subir_metadata_captura(
-                mock_s3, "Huechuraba", "20260423_100000",
-                "capturas/2026/04/23/Huechuraba/HCH_20260423_100000.jpg",
-                100000, 50000, "mi-bucket"
-            )
-
-    @pytest.mark.asyncio
-    async def test_subida_retorna_false_no_lanza_excepcion(self):
-        mock_s3 = AsyncMock()
-        with patch(f'{_MOD_CLOUD}.subir_json_s3', new_callable=AsyncMock, return_value=False):
-            await cloud.subir_metadata_captura(
-                mock_s3, "Temuco", "20260423_100000",
-                "capturas/2026/04/23/Temuco/TMU_20260423_100000.jpg",
-                1000, 500, "bucket"
-            )
-
-    @pytest.mark.asyncio
-    async def test_excepcion_interna_no_propaga(self):
-        mock_s3 = AsyncMock()
-        with patch(f'{_MOD_CLOUD}.generar_metadata_captura', side_effect=ValueError("error inesperado")):
-            await cloud.subir_metadata_captura(
-                mock_s3, "Temuco", "20260423_100000",
-                "key.jpg", 1000, 500, "bucket"
-            )
 
 
 # ---------------------------------------------------------------------------

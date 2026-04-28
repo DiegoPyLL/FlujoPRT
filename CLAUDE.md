@@ -33,7 +33,6 @@ deploy/
   run.sh                          # Script de ejecución en EC2
 scripts/
   realtime_dashboard.py           # Dashboard Streamlit (read-only sobre S3)
-  validate_metadata.py            # Validador de metadata
 tests/
   imageRecopilatorTest/           # Tests pytest (sufijo *_test.py)
 ```
@@ -114,6 +113,7 @@ Requiere credenciales AWS configuradas (`aws configure` o variables de entorno) 
 - No separar `MetadataIngestor` de nuevo sin pedirlo — fue fusionado a propósito.
 - No cambiar la estructura de rutas S3 (`capturas/YYYY/MM/DD/Planta/...`); hay consumers downstream (dashboard, validador) que dependen de ella.
 - No agregar dependencias pesadas al runtime de captura; el dashboard y validador tienen su propio `requirements.txt` aparte.
+- No asumir que el CSV de plantas es el dataset a procesar. El **dataset real** son los registros JSONL de detecciones vehiculares en S3 (`metadata/capturas/YYYY/MM/DD/{Planta}/`). El archivo `data/plantas_revision_tecnica.csv` es catálogo de referencia, no fuente ETL.
 
 ## Entorno de Desarrollo
 

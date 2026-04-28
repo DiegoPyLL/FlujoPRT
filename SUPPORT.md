@@ -314,16 +314,7 @@ ssh -L 8501:localhost:8501 -i ~/.ssh/tu-clave.pem ubuntu@<IP_EC2>
 # Luego abrir: http://localhost:8501
 ```
 
-### Sesion 3 — Validador de metadata (opcional)
-
-```bash
-tmux new -s FlujoPRT_CCTV_Validator
-cd ~/FlujoPRT
-python3 scripts/validate_metadata.py
-# Desconectarse: Ctrl+B, luego D
-```
-
-### Sesion 4 — Reconocimiento vehicular (opcional)
+### Sesion 3 — Reconocimiento vehicular (opcional)
 
 Procesa el historico de imagenes S3 detectando vehiculos con YOLOv8. Solo es necesario correrlo una vez para poner al dia el backlog; luego se puede ejecutar periodicamente para las capturas nuevas.
 

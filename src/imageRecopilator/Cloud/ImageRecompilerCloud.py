@@ -5,9 +5,8 @@ SISTEMA COMPLETO: CAPTURA + METADATA - Pipeline de Captura CCTV
 FUNCIONAMIENTO:
 ---------------
 1. Verifica credenciales AWS
-2. Ingesta catálogo de plantas a S3 (metadata estructurada)
-3. Loop principal infinito de captura (Lunes-Sábado)
-4. Por cada imagen subida, genera y sube metadata JSON espejo
+2. Loop principal infinito de captura (Lunes-Sábado)
+3. Al cierre del día lanza validate_vehiculos.py que genera el JSONL de análisis
 
 """
 
@@ -351,104 +350,6 @@ async def obtener_metadata_ec2() -> dict | None:
         return None
 
 
-# =========================
-# Metadata: funciones puras
-# =========================
-
-
-def generar_s3_key_metadata(planta: str, fecha_str: str, prefix: str = METADATA_PREFIX) -> str:
-    dt = datetime.strptime(fecha_str, "%Y%m%d_%H%M%S")
-    denom = DENOMINADORES.get(planta, planta.replace(" ", "_"))
-    filename = f"{denom}_{fecha_str}.json"
-    return (
-        f"{prefix}/"
-        f"capturas/"
-        f"{dt.year}/"
-        f"{dt.month:02d}/"
-        f"{dt.day:02d}/"
-        f"{planta}/"
-        f"{filename}"
-    )
-
-
-def generar_metadata_captura(
-    planta: str,
-    fecha_str: str,
-    s3_key_imagen: str,
-    bytes_originales: int,
-    bytes_comprimidos: int,
-    bucket: str
-) -> dict:
-    timestamp_captura = datetime.strptime(fecha_str, "%Y%m%d_%H%M%S").isoformat(timespec='seconds')
-    ratio = round(bytes_comprimidos / bytes_originales, 4) if bytes_originales > 0 else None
-
-    ec2_info = None
-    if _ec2_metadata_cache:
-        ec2_info = {
-            "instance_id": _ec2_metadata_cache.get("instance_id"),
-            "instance_type": _ec2_metadata_cache.get("instance_type")
-        }
-
-    return {
-        "version": "1",
-        "planta_id": DENOMINADORES.get(planta, planta.replace(" ", "_")),
-        "planta_nombre": planta,
-        "plataforma": "TÜV Rheinland",
-        "timestamp_captura": timestamp_captura,
-        "fecha_str": fecha_str,
-        "s3_imagen_key": s3_key_imagen,
-        "s3_bucket": bucket,
-        "bytes_originales": bytes_originales,
-        "bytes_comprimidos": bytes_comprimidos,
-        "ratio_compresion": ratio,
-        "instancia_ec2": ec2_info,
-        "generado_en": datetime.now().isoformat(timespec='seconds')
-    }
-
-
-# =========================
-# Metadata: I/O en S3
-# =========================
-
-async def subir_json_s3(s3_client, bucket: str, key: str, payload: dict) -> bool:
-    try:
-        body = json.dumps(payload, ensure_ascii=False, indent=None).encode('utf-8')
-        await s3_client.put_object(
-            Bucket=bucket,
-            Key=key,
-            Body=body,
-            ContentType="application/json"
-        )
-        return True
-    except (BotoCoreError, ClientError) as e:
-        logger.warning(f"[META] S3 error subiendo {key}: {e}")
-        return False
-
-
-
-async def subir_metadata_captura(
-    s3_client,
-    planta: str,
-    fecha_str: str,
-    s3_key_imagen: str,
-    bytes_originales: int,
-    bytes_comprimidos: int,
-    bucket: str,
-    prefix: str = METADATA_PREFIX
-) -> None:
-    try:
-        metadata = generar_metadata_captura(
-            planta, fecha_str, s3_key_imagen, bytes_originales, bytes_comprimidos, bucket
-        )
-        key_metadata = generar_s3_key_metadata(planta, fecha_str, prefix)
-        exito = await subir_json_s3(s3_client, bucket, key_metadata, metadata)
-
-        if exito:
-            logger.debug(f"[META] {planta} → s3://{bucket}/{key_metadata}")
-
-    except Exception as e:
-        logger.warning(f"[META] No se pudo generar metadata para {planta}: {e}")
-
 
 # =========================
 # Utilidades de horarios
@@ -684,16 +585,6 @@ async def worker_subida_s3(worker_id: int):
 
                     await metricas.registrar_subida(bytes_originales, len(data_comprimida))
                     logger.debug(f"[W{worker_id}] ✓ {planta} → s3://{S3_BUCKET}/{key}")
-
-                    await subir_metadata_captura(
-                        s3_client=s3,
-                        planta=planta,
-                        fecha_str=fecha_str,
-                        s3_key_imagen=key,
-                        bytes_originales=bytes_originales,
-                        bytes_comprimidos=len(data_comprimida),
-                        bucket=S3_BUCKET
-                    )
 
                 except (BotoCoreError, ClientError) as e:
                     await metricas.registrar_error_s3()

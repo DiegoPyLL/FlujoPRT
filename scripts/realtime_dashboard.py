@@ -78,7 +78,7 @@ DENOMINADORES = {
 NOMBRE_POR_ID = {v: k for k, v in DENOMINADORES.items()}
 
 # ---------------------------------------------------------------------------
-# S3 helpers (patrón tomado de scripts/validate_metadata.py)
+# S3 helpers
 # ---------------------------------------------------------------------------
 
 
