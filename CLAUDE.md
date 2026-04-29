@@ -37,8 +37,6 @@ tests/
   imageRecopilatorTest/           # Tests pytest (sufijo *_test.py)
 ```
 
-Nota: `MetadataIngestor.py` fue fusionado dentro de `ImageRecompilerCloud.py` (commit `7ea2577`). Todo lo relativo a ingesta de catálogo y metadata por captura vive ahora en ese archivo único.
-
 ## Stack Técnico
 
 - **Python 3.9+** con `asyncio` como modelo de concurrencia principal.
@@ -52,8 +50,7 @@ Nota: `MetadataIngestor.py` fue fusionado dentro de `ImageRecompilerCloud.py` (c
 
 - **Async por defecto** en el pipeline de captura/subida. No introducir código bloqueante en el event loop; usar `ThreadPoolExecutor` solo para CPU-bound (ej. compresión JPEG).
 - **Configuración por variables de entorno** con `os.getenv("NOMBRE", default)`. No hardcodear valores que ya existen como variable (ver tabla en README).
-- **Logging con el logger `flujo-prt`**, nivel INFO por defecto. Prefijos `[META]`, `[S3]`, etc. cuando ayudan a filtrar.
-- **Best-effort para metadata por captura**: si falla, warning y seguir — nunca interrumpir la captura por un error de metadata.
+- **Logging con el logger `flujo-prt`**, nivel INFO por defecto. Prefijos `[S3]`, `[VAL]`, etc. cuando ayudan a filtrar.
 - **Sin tildes en identificadores** (nombres de funciones, variables, claves JSON).
 
 ## Desarrollo y Testing
@@ -87,7 +84,7 @@ Requiere credenciales AWS configuradas (`aws configure` o variables de entorno) 
 ## AWS / S3
 
 - Bucket: `flujo-prt-imagenes` (us-east-1).
-- Prefijos: `capturas/YYYY/MM/DD/<Planta>/` para JPEGs; `metadata/capturas/...` espeja la ruta con `.json`; `metadata/plantas/catalogo_plantas.json` para el catálogo.
+- Prefijos: `capturas/YYYY/MM/DD/<Planta>/` para JPEGs; `metadata/capturas/YYYY/MM/DD/{Planta}/{DENOM}_YYYYMMDD.jsonl` para detecciones vehiculares; `metadata/stats/YYYY/MM/DD/resumen.json` para estadísticas del pipeline.
 - StorageClass: `INTELLIGENT_TIERING`.
 - Políticas IAM y guía de despliegue documentadas en [docs/DEPLOY_AWS.md](docs/DEPLOY_AWS.md).
 
@@ -98,6 +95,12 @@ Requiere credenciales AWS configuradas (`aws configure` o variables de entorno) 
 - IPs internas de cámaras (`10.57.x.x`) viven en el código — son red privada TUV, no secretos, pero no publicarlas fuera del repo.
 - Credenciales AWS: nunca commitearlas. `.env` está en el repo pero debe contener solo plantillas/placeholders (ver línea 1: `TODO("Modificar el ENV")`).
 - El `.env` actual tiene rutas locales de Windows y debe tratarse como ejemplo, no como fuente de verdad.
+
+## Reglas por Archivo
+
+### `scripts/VehicleRecognition/validate_vehiculos.py`
+
+**OBLIGATORIO:** Toda modificación a este archivo debe incrementar la constante `VERSION` en una unidad (patch: `1.0.0` → `1.0.1`, `1.0.1` → `1.0.2`, etc.). Sin excepción, incluso para cambios menores. El incremento debe hacerse en el mismo commit que la modificación.
 
 ## Qué hacer y qué no
 
@@ -110,7 +113,6 @@ Requiere credenciales AWS configuradas (`aws configure` o variables de entorno) 
 **No:**
 - No introducir frameworks nuevos (Django, FastAPI, etc.) — este es un servicio batch/daemon, no una web app.
 - No reintroducir el módulo de timelapse ni el flujo cloud de timelapse; fueron eliminados deliberadamente (commits `4cc98fe`, `5ac0c72`).
-- No separar `MetadataIngestor` de nuevo sin pedirlo — fue fusionado a propósito.
 - No cambiar la estructura de rutas S3 (`capturas/YYYY/MM/DD/Planta/...`); hay consumers downstream (dashboard, validador) que dependen de ella.
 - No agregar dependencias pesadas al runtime de captura; el dashboard y validador tienen su propio `requirements.txt` aparte.
 - No asumir que el CSV de plantas es el dataset a procesar. El **dataset real** son los registros JSONL de detecciones vehiculares en S3 (`metadata/capturas/YYYY/MM/DD/{Planta}/`). El archivo `data/plantas_revision_tecnica.csv` es catálogo de referencia, no fuente ETL.

@@ -103,12 +103,6 @@ def _clave_deteccion(clave_imagen: str) -> str:
     return f"{METADATA_PREFIX}/detecciones/{carpeta}/{p.stem}.json"
 
 
-def _clave_metadata_captura(clave_imagen: str) -> str:
-    p = PurePosixPath(clave_imagen)
-    carpeta = str(p.parent.relative_to(S3_PREFIX))
-    return f"{METADATA_PREFIX}/capturas/{carpeta}/{p.stem}.json"
-
-
 def _planta_id_desde_clave(clave: str) -> str:
     return PurePosixPath(clave).stem.split("_")[0]
 
@@ -186,14 +180,10 @@ def _descargar_json(s3, clave: str) -> dict | None:
 
 # ── Procesamiento de una imagen ───────────────────────────────────────────────
 def _procesar_imagen(s3, modelo, clave_imagen: str) -> dict | None:
-    """
-    Detecta vehiculos en una imagen S3. Sube JSON de deteccion y enriquece
-    metadata de captura. Retorna dict con resultados o None si hubo error.
-    """
-    archivo    = PurePosixPath(clave_imagen).name
-    clave_det  = _clave_deteccion(clave_imagen)
-    clave_meta = _clave_metadata_captura(clave_imagen)
-    t_inicio   = time.time()
+    """Detecta vehiculos en una imagen S3. Sube JSON de deteccion. Retorna dict con resultados o None si hubo error."""
+    archivo   = PurePosixPath(clave_imagen).name
+    clave_det = _clave_deteccion(clave_imagen)
+    t_inicio  = time.time()
 
     ruta_temp = _descargar_a_temp(s3, clave_imagen)
     if ruta_temp is None:
@@ -245,16 +235,6 @@ def _procesar_imagen(s3, modelo, clave_imagen: str) -> dict | None:
 
     if not _subir_json(s3, clave_det, json_det):
         return None
-
-    # Enriquecer metadata de captura (best-effort)
-    meta = _descargar_json(s3, clave_meta)
-    if meta is not None:
-        meta["detecciones"] = {
-            "conteo": conteo,
-            "s3_deteccion_key": clave_det,
-            "procesado_en": _ahora_iso(),
-        }
-        _subir_json(s3, clave_meta, meta)
 
     return {
         "conteo": conteo,

@@ -38,9 +38,6 @@ El sistema esta disenado para operar de forma continua en una instancia EC2, res
                   +---------------+
                   | Workers S3    |
                   | (aioboto3)    |
-                  |               |
-                  | + metadata    |
-                  |   por captura |
                   +---------------+
                           |               
                           v         
@@ -58,8 +55,8 @@ El sistema esta disenado para operar de forma continua en una instancia EC2, res
             +---------------------------+
             | AWS S3                    |
             |  capturas/YYYY/MM/DD/...  |
-            |  metadata/plantas/...     |
             |  metadata/capturas/...    |
+            |  metadata/stats/...       |
             +---------------------------+
 ```
 
@@ -110,12 +107,12 @@ s3://flujo-prt-imagenes/
 │       └── DEN_YYYYMMDD_HHMMSS.jpg
 │
 └── metadata/                                  # Datos estructurados (JSON / JSONL)
-    ├── plantas/
-    │   └── catalogo_plantas.json              # Catalogo completo de 116 plantas
-    ├── capturas/                              # Metadata por captura + JSONL vehicular
+    ├── capturas/                              # JSONL vehicular diario por planta
     │   └── YYYY/MM/DD/NombrePlanta/
-    │       ├── DEN_YYYYMMDD_HHMMSS.json       # Metadata de cada imagen capturada
     │       └── DEN_YYYYMMDD.jsonl             # Validacion vehicular diaria por planta
+    ├── capturas_anotadas/                     # Imagenes con bounding boxes dibujados
+    │   └── YYYY/MM/DD/NombrePlanta/
+    │       └── DEN_YYYYMMDD_HHMMSS.jpg
     ├── detecciones/                           # Resultados YOLOv8 por imagen (analisis_historico)
     │   └── YYYY/MM/DD/NombrePlanta/
     │       └── DEN_YYYYMMDD_HHMMSS.json
@@ -123,8 +120,6 @@ s3://flujo-prt-imagenes/
         └── YYYY/MM/DD/
             └── resumen.json
 ```
-
-Cada archivo de metadata de captura espeja la ruta de su imagen, reemplazando el prefijo `capturas/` por `metadata/capturas/` y la extension `.jpg` por `.json`. Los JSONs de deteccion usan el prefijo `metadata/detecciones/` con la misma estructura.
 
 ## Requisitos Previos
 
@@ -198,18 +193,9 @@ Todas las variables se configuran mediante variables de entorno. Si no se define
 | `METRICAS_INTERVALO` | `300`                | Segundos entre reportes de metricas                |
 | `MARGEN_PREVIO`      | `1200`               | Segundos antes de apertura para despertar (20 min) |
 
-### Ingesta de Metadata
-
-| Variable                   | Default                               | Descripcion                                       |
-| -------------------------- | ------------------------------------- | ------------------------------------------------- |
-| `METADATA_PREFIX`        | `metadata`                          | Prefijo S3 para archivos de metadata              |
-| `PLANTAS_CSV_PATH`       | `data/plantas_revision_tecnica.csv` | Ruta al CSV fuente                                |
-| `METADATA_SNAPSHOT`      | `false`                             | Si es `true`, guarda copia fechada del catalogo |
-| `CATALOGO_REFRESH_HORAS` | `24`                                | Horas entre actualizaciones del catalogo          |
-
 ## Ejecucion
 
-### Modo principal (captura + metadata integrada)
+### Modo principal (captura)
 
 ```bash
 # Desde la raiz del proyecto
@@ -219,10 +205,9 @@ python3 src/imageRecopilator/Cloud/ImageRecompilerCloud.py
 Al ejecutarse:
 
 1. Verifica credenciales AWS (via STS) y consulta metadata de la instancia EC2 (IMDS v2)
-2. Ingesta el catalogo de plantas desde el CSV y lo sube a S3
-3. Lanza 14 tareas de captura en paralelo (una por camara)
-4. Lanza 2 workers S3 que suben imagenes y metadata simultaneamente
-5. Lanza la tarea de validacion vehicular diaria (se dispara automaticamente 5 min tras el cierre de la ultima planta, lun-sab)
+2. Lanza 14 tareas de captura en paralelo (una por camara)
+3. Lanza 2 workers S3 que suben imagenes simultaneamente
+4. Lanza la tarea de validacion vehicular diaria (se dispara automaticamente 5 min tras el cierre de la ultima planta, lun-sab)
 6. Opera continuamente respetando los horarios de cada planta
 
 ### Subsistema de reconocimiento vehicular
@@ -289,107 +274,6 @@ chmod +x deploy/run.sh
 
 Los domingos no se realiza captura en ninguna planta.
 
-## Ingesta de Metadata Estructurada
-
-### Que es y por que existe
-
-El sistema no solo captura imagenes, tambien genera **datos estructurados** que permiten analizar y consultar las capturas sin necesidad de procesar los archivos JPEG. La metadata se almacena como archivos JSON en S3, separada de las imagenes pero vinculada a ellas.
-
-### Fuente de datos: CSV de plantas
-
-El archivo `data/plantas_revision_tecnica.csv` contiene informacion de **116 plantas de revision tecnica** de 15 plataformas nacionales. Esta información se guarda para que a futuro se pueda tener una obtención de todas las plantas de revisión técnica del pais.
-
-### Tipo 1: Catalogo de plantas
-
-Se genera al iniciar el sistema. Lee el CSV completo, cruza cada planta con los diccionarios de camaras activas del modulo de captura, y sube el resultado como un unico JSON a S3.
-
-**Ubicacion:** `s3://flujo-prt-imagenes/metadata/plantas/catalogo_plantas.json`
-
-**Ejemplo de registro (planta con camara activa):**
-
-```json
-{
-  "planta_id": "HCH",
-  "nombre": "Huechuraba",
-  "plataforma": "TUV Rheinland",
-  "region": "Region Metropolitana",
-  "comuna": "Huechuraba",
-  "direccion": "Av. Santa Clara N523",
-  "url_reserva": "https://www.prt.tuv.com/horario-prt",
-  "tiene_camara_activa": true,
-  "cam_id": "10.57.6.222_Cam08",
-  "horarios": {
-    "semana": { "apertura": "07:10", "cierre": "16:50" },
-    "sabado": { "apertura": "07:10", "cierre": "16:50" }
-  },
-  "generado_en": "2026-04-19T10:00:00"
-}
-```
-
-**Ejemplo de registro (planta sin camara):**
-
-```json
-{
-  "planta_id": "QUI",
-  "nombre": "Quilpue",
-  "plataforma": "San Damaso",
-  "region": "Valparaiso",
-  "comuna": "Quilpue",
-  "direccion": "Av. del Trabajador 627",
-  "url_reserva": "https://www.sandamaso.cl/",
-  "tiene_camara_activa": false,
-  "cam_id": null,
-  "horarios": null,
-  "generado_en": "2026-04-19T10:00:00"
-}
-```
-
-### Tipo 2: Metadata por captura
-
-Cada vez que una imagen se sube exitosamente a S3, el worker genera automaticamente un archivo JSON con informacion de esa captura. La ruta del JSON espeja la de la imagen:
-
-- Imagen: `capturas/2026/04/19/Huechuraba/HCH_20260419_100523.jpg`
-- Metadata: `metadata/capturas/2026/04/19/Huechuraba/HCH_20260419_100523.json`
-
-**Ejemplo de metadata por captura:**
-
-```json
-{
-  "version": "1",
-  "planta_id": "HCH",
-  "planta_nombre": "Huechuraba",
-  "plataforma": "TUV Rheinland",
-  "timestamp_captura": "2026-04-19T10:05:23",
-  "fecha_str": "20260419_100523",
-  "s3_imagen_key": "capturas/2026/04/19/Huechuraba/HCH_20260419_100523.jpg",
-  "s3_bucket": "flujo-prt-imagenes",
-  "bytes_originales": 85432,
-  "bytes_comprimidos": 52000,
-  "ratio_compresion": 0.6086,
-  "instancia_ec2": {"instance_id": "i-0abc123", "instance_type": "t2.large"},
-  "generado_en": "2026-04-19T10:05:24"
-}
-```
-
-### Trazabilidad y Logging
-
-El modulo de metadata registra cada etapa del proceso:
-
-| Evento                       | Nivel   | Mensaje de ejemplo                                                     |
-| ---------------------------- | ------- | ---------------------------------------------------------------------- |
-| Inicio de ingesta            | INFO    | `=== INICIO INGESTA CATALOGO PLANTAS ===`                            |
-| CSV leido                    | INFO    | `CSV leido: 116 plantas de 15 plataformas`                           |
-| Catalogo construido          | INFO    | `Catalogo construido: 14 con camara activa, 102 sin camara`          |
-| Catalogo subido a S3         | INFO    | `Catalogo subido: 116 registros -> s3://flujo-prt-imagenes/...`      |
-| CSV no encontrado            | ERROR   | `No se encontro CSV: data/plantas_revision_tecnica.csv`              |
-| Metadata de captura subida   | DEBUG   | `[META] Huechuraba -> s3://flujo-prt-imagenes/metadata/capturas/...` |
-| Error subiendo metadata      | WARNING | `[META] No se pudo generar metadata para Huechuraba: ...`            |
-| Stats periodicas escritas    | INFO    | `[S3] Stats escritas: metadata/stats/2026/04/19/resumen.json`        |
-| Validacion diaria programada | INFO    | `[VAL] Validacion programada para 20:25 (en 0h 45min)`               |
-| Validacion diaria iniciada   | INFO    | `[VAL] Lanzando validacion para prefijo: capturas/2026/04/19/`       |
-
-La metadata por captura opera en modo **best-effort**: si falla, se registra un warning pero no interrumpe la captura ni la subida de la imagen.
-
 ## Caracteristicas Tecnicas
 
 ### Concurrencia
@@ -430,7 +314,7 @@ El sistema solo captura durante los horarios de operacion de cada planta:
 
 ### Dashboard en tiempo real (Streamlit)
 
-Visualiza el estado del pipeline (plantas OK / caidas, gaps, volumen subido a S3, ratio de compresion, latencia) leyendo los JSONs de metadata del dia actual.
+Visualiza el estado del pipeline (stats de subida, metricas periodicas) leyendo los JSONs de stats del dia actual.
 
 ```bash
 # Instalar dependencias del dashboard (aisladas del runtime de captura)
@@ -472,9 +356,6 @@ aws s3 ls s3://flujo-prt-imagenes/metadata/capturas/2026/04/19/ --recursive | gr
 
 # Ver stats del proceso capturador de hoy
 aws s3 cp s3://flujo-prt-imagenes/metadata/stats/2026/04/19/resumen.json -
-
-# Ver el catalogo de plantas
-aws s3 cp s3://flujo-prt-imagenes/metadata/plantas/catalogo_plantas.json -
 ```
 
 ### Descargar capturas
@@ -608,13 +489,13 @@ python scripts/VehicleRecognition/analisis_historico.py --forzar
 | `MODELO_YOLO`      | `yolov8m.pt`         | Archivo de pesos YOLO           |
 | `UMBRAL_CONFIANZA` | `0.55`               | Umbral minimo de confianza      |
 
-Los resultados de deteccion se almacenan en `metadata/detecciones/YYYY/MM/DD/Planta/img.json` y se enriquece el JSON de metadata de captura existente con un campo `detecciones`.
+Los resultados de deteccion se almacenan en `metadata/detecciones/YYYY/MM/DD/Planta/img.json`.
 
 ## Modulos del Sistema
 
 ### ImageRecompilerCloud.py
 
-Modulo principal. Orquesta la captura, compresion, deduplicacion y subida de imagenes. Al iniciar, tambien dispara la ingesta del catalogo de metadata y en cada subida exitosa genera la metadata por captura.
+Modulo principal. Orquesta la captura, compresion, deduplicacion y subida de imagenes a S3.
 
 **Funciones principales:**
 

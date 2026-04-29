@@ -43,6 +43,8 @@ S3_PREFIJO          = os.getenv("S3_PREFIJO", "capturas/2026/")
 S3_PREFIJO_ANOTADAS = os.getenv("S3_PREFIJO_ANOTADAS", "capturas_anotadas")
 S3_PREFIJO_JSONL    = os.getenv("S3_PREFIJO_JSONL", "metadata/capturas")
 
+VERSION = "1.0.1"
+
 PATRON_ARCHIVO = re.compile(r"^([A-Z]{2,3})_(\d{8})_(\d{6})\.jpg$", re.IGNORECASE)
 
 DENOMINADORES = {
@@ -120,7 +122,7 @@ def parsear_nombre(nombre: str) -> dict:
 def planta_desde_clave(clave: str) -> str:
     """capturas/YYYY/MM/DD/Planta/img.jpg → 'Planta'"""
     partes = clave.split("/")
-    return partes[3] if len(partes) > 3 else "desconocida"
+    return partes[4] if len(partes) > 4 else "desconocida"
 
 
 def fecha_desde_prefijo(prefijo: str) -> str | None:
@@ -321,6 +323,7 @@ def main():
     args = parser.parse_args()
 
     logger = configurar_logger()
+    logger.info("validate-vehiculos v%s", VERSION)
     s3 = boto3.client("s3")
 
     logger.info("Listando objetos en s3://%s/%s ...", args.bucket, args.prefijo)

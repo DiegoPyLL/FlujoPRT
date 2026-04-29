@@ -354,9 +354,6 @@ aws s3 ls s3://flujo-prt-imagenes/metadata/detecciones/$(date +%Y/%m/%d)/
 # Imagenes con bounding boxes
 aws s3 ls s3://flujo-prt-imagenes/capturas_anotadas/$(date +%Y/%m/%d)/
 
-# Catalogo de plantas subido al iniciar
-aws s3 cp s3://flujo-prt-imagenes/metadata/plantas/catalogo_plantas.json -
-
 # Tamanio total del bucket
 aws s3 ls s3://flujo-prt-imagenes/capturas/ --recursive --human-readable --summarize
 ```
