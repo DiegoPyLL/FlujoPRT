@@ -4,7 +4,7 @@ Guía para Claude Code al trabajar en este repositorio. Lee esto antes de hacer 
 
 ## Resumen del Proyecto
 
-**FlujoPRT** es un pipeline Python asíncrono que captura imágenes desde 14 cámaras IP de plantas de revisión técnica TUV Rheinland (Chile) y las almacena en AWS S3 junto con metadata estructurada (JSON) derivada de un catálogo CSV de 116 plantas nacionales.
+**FlujoPRT** es un pipeline Python asíncrono que captura imágenes desde 14 cámaras IP de plantas de revisión técnica TUV Rheinland (Chile) y las almacena en AWS S3 junto con metadata estructurada (JSONL)
 
 El sistema está pensado para correr 24/7 en una instancia EC2 respetando los horarios de operación por planta (lun–sáb; domingos suspendido).
 
@@ -105,12 +105,14 @@ Requiere credenciales AWS configuradas (`aws configure` o variables de entorno) 
 ## Qué hacer y qué no
 
 **Sí:**
+
 - Mantener el estilo async existente al extender el pipeline.
 - Respetar el patrón productor/consumidor con `asyncio.Queue` para desacoplar captura de subida.
 - Añadir nuevas variables de configuración vía `os.getenv` y documentarlas en README.
 - Escribir tests en `tests/<modulo>Test/` con sufijo `_test.py`.
 
 **No:**
+
 - No introducir frameworks nuevos (Django, FastAPI, etc.) — este es un servicio batch/daemon, no una web app.
 - No reintroducir el módulo de timelapse ni el flujo cloud de timelapse; fueron eliminados deliberadamente (commits `4cc98fe`, `5ac0c72`).
 - No cambiar la estructura de rutas S3 (`capturas/YYYY/MM/DD/Planta/...`); hay consumers downstream (dashboard, validador) que dependen de ella.

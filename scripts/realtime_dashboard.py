@@ -96,17 +96,18 @@ def listar_keys_hoy(s3, bucket: str, prefix: str) -> list[str]:
     for page in paginator.paginate(Bucket=bucket, Prefix=full_prefix):
         for obj in page.get("Contents", []):
             k = obj["Key"]
-            if k.endswith(".json"):
+            if k.endswith(".jsonl"):
                 keys.append(k)
     return keys
 
 
-def descargar_json(s3, bucket: str, key: str) -> dict | None:
+def descargar_jsonl(s3, bucket: str, key: str) -> list[dict]:
     try:
         resp = s3.get_object(Bucket=bucket, Key=key)
-        return json.loads(resp["Body"].read().decode("utf-8"))
+        lineas = resp["Body"].read().decode("utf-8").splitlines()
+        return [json.loads(ln) for ln in lineas if ln.strip()]
     except (BotoCoreError, ClientError, json.JSONDecodeError):
-        return None
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -136,30 +137,34 @@ def cargar_dataset_hoy() -> pd.DataFrame:
 
     registros: list[dict] = []
     with ThreadPoolExecutor(max_workers=20) as pool:
-        futuros = {pool.submit(descargar_json, s3, S3_BUCKET, k): k for k in keys}
+        futuros = {pool.submit(descargar_jsonl, s3, S3_BUCKET, k): k for k in keys}
         for fut in as_completed(futuros):
-            data = fut.result()
-            if data is not None:
-                registros.append(data)
+            registros.extend(fut.result())
 
     if not registros:
         return pd.DataFrame()
 
     df = pd.DataFrame(registros)
 
-    df["timestamp_captura"] = pd.to_datetime(df["timestamp_captura"], errors="coerce")
-    df["generado_en"] = pd.to_datetime(df["generado_en"], errors="coerce")
+    # Mapeo de campos validate_vehiculos → dashboard
+    df["timestamp_captura"] = pd.to_datetime(df["timestamp_imagen"], errors="coerce")
+    df["generado_en"] = pd.to_datetime(df["procesado_en"], errors="coerce")
+    df["planta_id"] = df["planta_codigo"].str.upper()
+    df["planta_nombre"] = df["planta"]
+    df["mb_archivo"] = df["bytes_archivo"] / 1024 / 1024
     df["latencia_s"] = (df["generado_en"] - df["timestamp_captura"]).dt.total_seconds()
     df["hora"] = df["timestamp_captura"].dt.hour
-    df["mb_originales"] = df["bytes_originales"] / 1024 / 1024
-    df["mb_comprimidos"] = df["bytes_comprimidos"] / 1024 / 1024
 
-    if "instancia_ec2" in df.columns:
-        df["instance_id"] = df["instancia_ec2"].apply(
-            lambda v: v.get("instance_id") if isinstance(v, dict) else None
+    df["vehiculos_total"] = df["conteo"].apply(
+        lambda c: c.get("total", 0) if isinstance(c, dict) else 0
+    )
+    df["bboxes_total"] = df["detecciones"].apply(
+        lambda d: len(d) if isinstance(d, list) else 0
+    )
+    for tipo in ("auto", "moto", "bus", "camion"):
+        df[f"v_{tipo}"] = df["conteo"].apply(
+            lambda c, t=tipo: c.get(t, 0) if isinstance(c, dict) else 0
         )
-    else:
-        df["instance_id"] = None
 
     return df.sort_values("timestamp_captura").reset_index(drop=True)
 
@@ -210,6 +215,7 @@ def tabla_estado_plantas(df: pd.DataFrame) -> pd.DataFrame:
                 "Última captura": "—",
                 "Hace (min)": None,
                 "Capturas hoy": 0,
+                "Vehículos (bbox)": 0,
                 f"Últ. {VENTANA_RECIENTE_MIN} min": 0,
                 "Estado": _status_planta(None, en_horario),
             })
@@ -218,12 +224,14 @@ def tabla_estado_plantas(df: pd.DataFrame) -> pd.DataFrame:
         ultima = sub["timestamp_captura"].max()
         delta = (ahora - ultima.to_pydatetime()).total_seconds()
         recientes = int((sub["timestamp_captura"] >= corte).sum())
+        bboxes = int(sub["bboxes_total"].sum())
         filas.append({
             "Planta": nombre,
             "ID": pid,
             "Última captura": ultima.strftime("%H:%M:%S"),
             "Hace (min)": round(delta / 60, 1),
             "Capturas hoy": int(len(sub)),
+            "Vehículos (bbox)": bboxes,
             f"Últ. {VENTANA_RECIENTE_MIN} min": recientes,
             "Estado": _status_planta(delta, en_horario),
         })
@@ -288,42 +296,27 @@ with st.spinner("Cargando metadata del día desde S3..."):
 
 if df.empty:
     st.warning(
-        "No se encontraron JSONs de metadata para hoy. "
-        "Verifica que el capturador esté corriendo y que hay plantas dentro de horario."
+        "No se encontraron archivos JSONL de detecciones para hoy. "
+        "validate_vehiculos.py se ejecuta al cierre del día; los datos aparecerán después de la última planta."
     )
     st.stop()
-
-# Mostrar instancia EC2 en sidebar si está disponible
-inst_ids = df["instance_id"].dropna().unique()
-if len(inst_ids):
-    with st.sidebar:
-        st.divider()
-        st.caption(f"EC2: `{inst_ids[0]}`")
 
 # -- Header con KPIs globales ------------------------------------------------
 
 tabla = tabla_estado_plantas(df)
 activas = int((tabla["Estado"] == "OK").sum())
 total_plantas = len(DENOMINADORES)
-mb_orig_total = df["mb_originales"].sum()
-mb_comp_total = df["mb_comprimidos"].sum()
-ahorro_pct = (
-    (mb_orig_total - mb_comp_total) / mb_orig_total * 100 if mb_orig_total > 0 else 0
-)
+mb_total = df["mb_archivo"].sum()
+bboxes_hoy = int(df["bboxes_total"].sum())
 gaps = gaps_por_planta(df)
 col_recientes = f"Últ. {VENTANA_RECIENTE_MIN} min"
 capturas_recientes = int(tabla[col_recientes].sum())
 
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Plantas OK", f"{activas} / {total_plantas}")
-c2.metric("Capturas hoy", f"{len(df):,}")
-c3.metric(
-    "Volumen subido",
-    f"{mb_comp_total:.1f} MB",
-    delta=f"−{ahorro_pct:.1f}% vs original",
-    delta_color="inverse",
-)
-c4.metric("Gaps detectados", len(gaps))
+c2.metric("Capturas procesadas", f"{len(df):,}")
+c3.metric("Volumen analizado", f"{mb_total:.1f} MB")
+c4.metric("Vehículos (bbox)", f"{bboxes_hoy:,}")
 c5.metric(f"Capturas últ. {VENTANA_RECIENTE_MIN} min", capturas_recientes)
 
 st.divider()
@@ -385,7 +378,8 @@ def _color_recientes(val: object) -> str:
 st.dataframe(
     tabla.style
         .map(_color_estado, subset=["Estado"])
-        .map(_color_recientes, subset=[col_recientes]),
+        .map(_color_recientes, subset=[col_recientes])
+        .map(_color_recientes, subset=["Vehículos (bbox)"]),
     use_container_width=True,
     hide_index=True,
 )
@@ -394,21 +388,21 @@ st.divider()
 
 # -- Sección 2: Volumen en el tiempo ----------------------------------------
 
-st.subheader("2 · Volumen subido a S3 por hora")
+st.subheader("2 · Volumen analizado por hora")
 
 df_vol = (
     df.assign(hora_bin=df["timestamp_captura"].dt.floor("h"))
-      .groupby(["hora_bin", "planta_nombre"], as_index=False)["mb_comprimidos"]
+      .groupby(["hora_bin", "planta_nombre"], as_index=False)["mb_archivo"]
       .sum()
 )
 
 fig_vol = px.bar(
     df_vol,
     x="hora_bin",
-    y="mb_comprimidos",
+    y="mb_archivo",
     color="planta_nombre",
     barmode="stack",
-    labels={"hora_bin": "Hora", "mb_comprimidos": "MB subidos", "planta_nombre": "Planta"},
+    labels={"hora_bin": "Hora", "mb_archivo": "MB", "planta_nombre": "Planta"},
 )
 fig_vol.update_xaxes(tickformat="%H:%M")
 fig_vol.update_layout(height=380, legend_title=None)
@@ -438,26 +432,34 @@ st.plotly_chart(fig_heat, use_container_width=True)
 
 st.divider()
 
-# -- Sección 4: Eficiencia de compresión ------------------------------------
+# -- Sección 4: Vehículos detectados ----------------------------------------
 
-st.subheader("4 · Ratio de compresión por planta")
-st.caption("Valores más bajos = más ahorro. Cámaras con ratio cercano a 1 ya entregan JPEGs muy comprimidos.")
+st.subheader("4 · Vehículos detectados por planta")
 
-fig_box = px.box(
-    df.dropna(subset=["ratio_compresion"]),
-    x="planta_id",
-    y="ratio_compresion",
-    points="outliers",
-    labels={"planta_id": "Planta", "ratio_compresion": "bytes_comp / bytes_orig"},
+df_veh = (
+    df.groupby("planta_nombre", as_index=False)[["v_auto", "v_moto", "v_bus", "v_camion"]]
+      .sum()
+      .rename(columns={"v_auto": "Auto", "v_moto": "Moto", "v_bus": "Bus", "v_camion": "Camión"})
 )
-fig_box.update_layout(height=380)
-st.plotly_chart(fig_box, use_container_width=True)
+df_veh_long = df_veh.melt(id_vars="planta_nombre", var_name="Tipo", value_name="Conteo")
+
+fig_veh = px.bar(
+    df_veh_long,
+    x="planta_nombre",
+    y="Conteo",
+    color="Tipo",
+    barmode="stack",
+    labels={"planta_nombre": "Planta", "Conteo": "Vehículos"},
+    color_discrete_map={"Auto": "#00c800", "Moto": "#0078ff", "Bus": "#ffc800", "Camión": "#dc2828"},
+)
+fig_veh.update_layout(height=380, legend_title=None, xaxis_tickangle=-30)
+st.plotly_chart(fig_veh, use_container_width=True)
 
 st.divider()
 
 # -- Sección 5: Latencia del pipeline ---------------------------------------
 
-st.subheader("5 · Latencia del pipeline (generado − captura)")
+st.subheader("5 · Latencia de procesamiento YOLO (procesado − captura)")
 
 lat = df["latencia_s"].dropna()
 if not lat.empty:
