@@ -9,7 +9,7 @@ Guia paso a paso para levantar el sistema completo (captura + S3 + dashboard) en
 - Cuenta AWS activa con permisos de administrador
 - Cliente AWS CLI instalado en tu maquina local (`aws --version`)
 - Git instalado localmente
-- pip install -r deploy/requirements.txt
+- pip install -r deploy/requirements.cloud.txt
 
 ---
 
@@ -457,13 +457,11 @@ tmux ls
 # Volver a conectarse
 tmux attach -t FlujoPRT_CCTV
 tmux attach -t FlujoPRT_Dashboard
-tmux attach -t FlujoPRT_CCTV_Validator
 tmux attach -t FlujoPRT_VehicleDetection
 
 # Matar sesiones (para reiniciar procesos)
 tmux kill-session -t FlujoPRT_CCTV
 tmux kill-session -t FlujoPRT_Dashboard
-tmux kill-session -t FlujoPRT_CCTV_Validator
 tmux kill-session -t FlujoPRT_VehicleDetection
 
 # Reiniciar captura

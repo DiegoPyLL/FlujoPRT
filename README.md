@@ -66,6 +66,7 @@ El sistema esta disenado para operar de forma continua en una instancia EC2, res
 FlujoPRT/
 ├── README.md
 ├── SUPPORT.md                            # Guia de despliegue AWS paso a paso
+├── TODO.md                               # Pendientes del proyecto
 ├── pytest.ini
 ├── data/
 │   ├── plantas_revision_tecnica.csv      # Fuente de datos: 116 plantas nacionales
@@ -78,6 +79,7 @@ FlujoPRT/
 │   ├── requirements.local.txt            # Dependencias Python para desarrollo local
 │   └── run.sh                            # Script de ejecucion en EC2
 ├── scripts/
+│   ├── procesar_registros.py             # Procesamiento y validacion de JSONL vehiculares
 │   ├── realtime_dashboard.py             # Dashboard Streamlit (lectura S3)
 │   └── VehicleRecognition/              # Subsistema de reconocimiento vehicular
 │       ├── detector.py                   # Wrapper YOLOv8 para deteccion de vehiculos
@@ -88,9 +90,10 @@ FlujoPRT/
 │       └── Cloud/
 │           └── ImageRecompilerCloud.py   # Modulo principal (captura + metadata)
 └── tests/
-    └── imageRecopilatorTest/
-        ├── imageRecopilatorCloud_test.py
-        └── imageRecopilatorLocal_test.py
+    ├── imageRecopilatorTest/
+    │   └── imageRecopilatorCloud_test.py
+    └── procesadorTest/
+        └── procesar_registros_test.py
 ```
 
 ## Estructura de Almacenamiento en S3
@@ -110,9 +113,6 @@ s3://flujo-prt-imagenes/
     ├── capturas/                              # JSONL vehicular diario por planta
     │   └── YYYY/MM/DD/NombrePlanta/
     │       └── DEN_YYYYMMDD.jsonl             # Validacion vehicular diaria por planta
-    ├── capturas_anotadas/                     # Imagenes con bounding boxes dibujados
-    │   └── YYYY/MM/DD/NombrePlanta/
-    │       └── DEN_YYYYMMDD_HHMMSS.jpg
     ├── detecciones/                           # Resultados YOLOv8 por imagen (analisis_historico)
     │   └── YYYY/MM/DD/NombrePlanta/
     │       └── DEN_YYYYMMDD_HHMMSS.json
@@ -492,6 +492,47 @@ python scripts/VehicleRecognition/analisis_historico.py --forzar
 Los resultados de deteccion se almacenan en `metadata/detecciones/YYYY/MM/DD/Planta/img.json`.
 
 ## Modulos del Sistema
+
+### procesar_registros.py
+
+Descarga los JSONL de detecciones desde S3 (`metadata/capturas/`), aplica limpieza, transformaciones y validaciones, y genera salidas locales estructuradas.
+
+**Funciones principales:**
+
+- `limpiar_errores()` — Rechaza registros con campo `error` no nulo
+- `limpiar_campos_nulos()` — Descarta registros sin campos obligatorios (`s3_key`, `planta`, `fecha`, `hora`, `conteo`, `detecciones`)
+- `limpiar_duplicados()` — Conserva la primera aparicion de cada `s3_key`
+- `agregar_hora_categoria()` — Clasifica el registro en `manana`, `tarde`, `cierre` o `fuera_horario`
+- `agregar_metricas_deteccion()` — Calcula `confianza_media`, `tiene_vehiculos` y `conteo_consistente`
+- `validar_tipos_y_estructura()` — Verifica formatos de fecha/hora y que `bytes_archivo > 0`
+- `validar_semantica()` — Detecta fechas futuras, confianzas fuera de rango y tipos vehiculares invalidos
+- `validar_integridad_referencial()` — Cruza `planta` y `planta_codigo` con el catalogo `DENOMINADORES`
+- `generar_reporte()` — Produce un JSON de resumen con estadisticas y warnings
+
+**Salidas:**
+
+| Archivo | Descripcion |
+| ------- | ----------- |
+| `data/processed/validos/registros_YYYYMMDD.jsonl` | Registros limpios listos para analisis |
+| `data/processed/rechazados/rechazados_YYYYMMDD.jsonl` | Registros descartados con motivo |
+| `data/reports/reporte_YYYYMMDD_HHMMSS.json` | Reporte de ejecucion con metricas y warnings |
+| `data/reports/proceso_YYYYMMDD.log` | Log del proceso |
+
+**Uso:**
+
+```bash
+# Procesar el dia de hoy (default)
+python scripts/procesar_registros.py
+
+# Prefijo especifico
+python scripts/procesar_registros.py --prefijo capturas/2026/04/25/
+
+# Solo archivos ya en data/raw/ (sin descargar de S3)
+python scripts/procesar_registros.py --solo-local
+
+# Otro bucket
+python scripts/procesar_registros.py --bucket mi-bucket-pruebas
+```
 
 ### ImageRecompilerCloud.py
 

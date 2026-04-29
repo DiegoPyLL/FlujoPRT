@@ -32,7 +32,6 @@ asegurarse de crear el ec2 y s3 en la misma region
        *   Crear sesión nueva:
               tmux new -s FlujoPRT_CCTV
               tmux new -s FlujoPRT_Dashboard
-              tmux new -s FlujoPRT_CCTV_Validator
               tmux new -s FlujoPRT_CCTV_VehicleCounter
 
        *   Comando de ejecución FlujoPRT_CCTV:
@@ -61,7 +60,6 @@ asegurarse de crear el ec2 y s3 en la misma region
        *   Volver a entrar a la sesión:
               tmux attach -t FlujoPRT_CCTV
               tmux attach -t FlujoPRT_Dashboard
-              tmux attach -t FlujoPRT_CCTV_Validator
               tmux attach -t FlujoPRT_CCTV_VehicleCounter
 
        *   Ver sesiones activas:
@@ -70,7 +68,6 @@ asegurarse de crear el ec2 y s3 en la misma region
        *   Matar sesión (Reiniciar proceso):
               tmux kill-session -t FlujoPRT_CCTV
               tmux kill-session -t FlujoPRT_CCTV_Dashboard
-              tmux kill-session -t FlujoPRT_CCTV_Validator
               tmux kill-session -t FlujoPRT_CCTV_VehicleCounter
 
 
