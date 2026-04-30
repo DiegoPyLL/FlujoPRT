@@ -13,44 +13,44 @@ El sistema esta disenado para operar de forma continua en una instancia EC2, res
 ```
                    FUENTE DE DATOS
                    ===============
-                   Camaras IP (14)       
-                         |                
-                         v                
-                  +---------------+       
-                  | Captura HTTP  |       
-                  | (aiohttp)     |       
-                  +-------+-------+       
-                          |               
-                          v               
-                  +---------------+       
-                  | Compresion    |       
-                  | JPEG + MD5    |       
-                  | (Pillow)      |       
-                  +-------+-------+       
-                          |               
-                          v               
-                  +---------------+       
-                  | Cola Async    |       
-                  | (Queue)       |       
-                  +-------+-------+       
-                          |               
-                          v               
+                   Camaras IP (14)     
+                         |              
+                         v              
+                  +---------------+     
+                  | Captura HTTP  |     
+                  | (aiohttp)     |     
+                  +-------+-------+     
+                          |             
+                          v             
+                  +---------------+     
+                  | Compresion    |     
+                  | JPEG + MD5    |     
+                  | (Pillow)      |     
+                  +-------+-------+     
+                          |             
+                          v             
+                  +---------------+     
+                  | Cola Async    |     
+                  | (Queue)       |     
+                  +-------+-------+     
+                          |             
+                          v             
                   +---------------+
                   | Workers S3    |
                   | (aioboto3)    |
                   +---------------+
-                          |               
-                          v         
-         +---------------------------------+                  
-         | validate_vehiculo.py            |       
-         | (Reconocimiento vehicular       |       
-         |   utilizando YOLOv8m)           |         
+                          |             
+                          v       
+         +---------------------------------+                
+         | validate_vehiculo.py            |     
+         | (Reconocimiento vehicular       |     
+         |   utilizando YOLOv8m)           |       
          |                                 | 
          | + JSONL guardando la metadata   |   
          |   del Reconocimiento vehicular  |   
          |   separadolo por YYYY/MM/DD     | 
-         +---------------------------------+      
-                          |               
+         +---------------------------------+    
+                          |             
                           v  
             +---------------------------+
             | AWS S3                    |
@@ -208,7 +208,7 @@ Al ejecutarse:
 2. Lanza 14 tareas de captura en paralelo (una por camara)
 3. Lanza 2 workers S3 que suben imagenes simultaneamente
 4. Lanza la tarea de validacion vehicular diaria (se dispara automaticamente 5 min tras el cierre de la ultima planta, lun-sab)
-6. Opera continuamente respetando los horarios de cada planta
+5. Opera continuamente respetando los horarios de cada planta
 
 ### Subsistema de reconocimiento vehicular
 
@@ -511,12 +511,12 @@ Descarga los JSONL de detecciones desde S3 (`metadata/capturas/`), aplica limpie
 
 **Salidas:**
 
-| Archivo | Descripcion |
-| ------- | ----------- |
-| `data/processed/validos/registros_YYYYMMDD.jsonl` | Registros limpios listos para analisis |
-| `data/processed/rechazados/rechazados_YYYYMMDD.jsonl` | Registros descartados con motivo |
-| `data/reports/reporte_YYYYMMDD_HHMMSS.json` | Reporte de ejecucion con metricas y warnings |
-| `data/reports/proceso_YYYYMMDD.log` | Log del proceso |
+| Archivo                                                 | Descripcion                                  |
+| ------------------------------------------------------- | -------------------------------------------- |
+| `data/processed/validos/registros_YYYYMMDD.jsonl`     | Registros limpios listos para analisis       |
+| `data/processed/rechazados/rechazados_YYYYMMDD.jsonl` | Registros descartados con motivo             |
+| `data/reports/reporte_YYYYMMDD_HHMMSS.json`           | Reporte de ejecucion con metricas y warnings |
+| `data/reports/proceso_YYYYMMDD.log`                   | Log del proceso                              |
 
 **Uso:**
 
@@ -565,3 +565,6 @@ Ver seccion [Reconocimiento Vehicular](#reconocimiento-vehicular-yolov8) para us
 - Buscador de plantas: https://www.prt.cl/Paginas/Buscador.aspx
 - Base URL de camaras: `https://pti-cameras.cl.tuv.com/camaras/`
 - Formato de URL: `https://pti-cameras.cl.tuv.com/camaras/{IP_CamXX}/imagen.jpg`
+
+
+**DashBoard Stremlint IP pública: [http://54.166.187.247:8501](http://54.166.187.247:8501)**

@@ -110,6 +110,7 @@ Requiere credenciales AWS configuradas (`aws configure` o variables de entorno) 
 - Respetar el patrón productor/consumidor con `asyncio.Queue` para desacoplar captura de subida.
 - Añadir nuevas variables de configuración vía `os.getenv` y documentarlas en README.
 - Escribir tests en `tests/<modulo>Test/` con sufijo `_test.py`.
+- Tener en consideración el consumo de créditos de aws y recursos de la instancia.
 
 **No:**
 
