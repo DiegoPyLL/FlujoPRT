@@ -47,7 +47,7 @@ DOWN_THRESHOLD = int(os.getenv("DOWN_THRESHOLD", "900"))
 VENTANA_RECIENTE_MIN = int(os.getenv("VENTANA_RECIENTE_MIN", "5"))
 DIAS_FALLBACK = int(os.getenv("DIAS_FALLBACK", "7"))
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 
 CHILE_TZ = ZoneInfo("America/Santiago")
 
@@ -251,8 +251,13 @@ def _dentro_horario(planta: str, ahora: datetime) -> bool:
     return h_ini <= ahora.time() <= h_fin
 
 
-def tabla_estado_plantas(df: pd.DataFrame) -> pd.DataFrame:
-    ahora = _ahora_chile()
+def tabla_estado_plantas(df: pd.DataFrame, fecha_str: str | None = None) -> pd.DataFrame:
+    hoy_str = _ahora_chile().strftime("%Y/%m/%d")
+    es_historico = fecha_str is not None and fecha_str != hoy_str
+    if es_historico and not df.empty:
+        ahora = df["timestamp_captura"].max().to_pydatetime()
+    else:
+        ahora = _ahora_chile()
     corte = ahora - timedelta(minutes=VENTANA_RECIENTE_MIN)
     filas: list[dict] = []
 
@@ -420,7 +425,7 @@ def seccion_estado_y_kpis() -> None:
     total_plantas = len(DENOMINADORES)
     col_recientes = f"Últ. {VENTANA_RECIENTE_MIN} min"
     if not df.empty:
-        tabla = tabla_estado_plantas(df)
+        tabla = tabla_estado_plantas(df, fecha_str=fecha_str)
         activas = int((tabla["Estado"] == "OK").sum())
         mb_total = df["mb_archivo"].sum()
         bboxes_hoy = int(df["bboxes_total"].sum())
