@@ -1,8 +1,12 @@
 """
 Dashboard de monitoreo en tiempo real para FlujoPRT.
 
-Lee los JSONs de metadata del día actual desde S3 y los presenta como un
-dashboard Streamlit con auto-refresh cada DASHBOARD_REFRESH segundos.
+Lee los JSONs de metadata del día actual desde S3 y los presenta en tres
+secciones independientes con @st.fragment. Cada sección se actualiza a su
+propia frecuencia sin recargar la página completa:
+  - Estado/KPIs/tabla operacional: FAST_REFRESH  (default 60 s)
+  - Estadísticas del pipeline:     STATS_REFRESH (default 120 s)
+  - Gráficos de análisis:          DASHBOARD_REFRESH (default 300 s)
 
 Ejecución:
     streamlit run scripts/realtime_dashboard.py \
@@ -36,12 +40,14 @@ S3_BUCKET = os.getenv("S3_BUCKET", "flujo-prt-imagenes")
 METADATA_PREFIX = os.getenv("METADATA_PREFIX", "metadata/capturas")
 STATS_PREFIX = os.getenv("STATS_PREFIX", "metadata/stats")
 DASHBOARD_REFRESH = int(os.getenv("DASHBOARD_REFRESH", "300"))
+FAST_REFRESH      = int(os.getenv("FAST_REFRESH", "60"))
+STATS_REFRESH     = int(os.getenv("STATS_REFRESH", "120"))
 GAP_THRESHOLD = int(os.getenv("GAP_THRESHOLD", "180"))
 DOWN_THRESHOLD = int(os.getenv("DOWN_THRESHOLD", "900"))
 VENTANA_RECIENTE_MIN = int(os.getenv("VENTANA_RECIENTE_MIN", "5"))
 DIAS_FALLBACK = int(os.getenv("DIAS_FALLBACK", "7"))
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 CHILE_TZ = ZoneInfo("America/Santiago")
 
@@ -133,7 +139,7 @@ def encontrar_fecha_con_datos() -> str:
     return _ahora_chile().strftime("%Y/%m/%d")
 
 
-@st.cache_data(ttl=DASHBOARD_REFRESH, show_spinner=False)
+@st.cache_data(ttl=STATS_REFRESH, show_spinner=False)
 def cargar_stats_hoy() -> dict | None:
     """Lee el JSON de stats acumuladas que el pipeline escribe periódicamente a S3."""
     s3 = s3_client()
@@ -146,7 +152,7 @@ def cargar_stats_hoy() -> dict | None:
         return None
 
 
-@st.cache_data(ttl=DASHBOARD_REFRESH, show_spinner=False)
+@st.cache_data(ttl=FAST_REFRESH, show_spinner=False)
 def estado_validacion_fecha(fecha_str: str) -> dict:
     """Infiere el estado de validate_vehiculos desde los JSONL disponibles en S3 para la fecha dada."""
     s3 = s3_client()
@@ -174,7 +180,7 @@ def estado_validacion_fecha(fecha_str: str) -> dict:
     }
 
 
-@st.cache_data(ttl=DASHBOARD_REFRESH, show_spinner=False)
+@st.cache_data(ttl=FAST_REFRESH, show_spinner=False)
 def cargar_dataset_fecha(fecha_str: str) -> pd.DataFrame:
     s3 = s3_client()
     objetos = listar_keys_fecha(s3, S3_BUCKET, METADATA_PREFIX, fecha_str)
@@ -341,7 +347,7 @@ with st.sidebar:
 
     st.divider()
     st.caption(f"Hora Santiago: **{_ahora_chile().strftime('%H:%M:%S')}**")
-    st.caption(f"Próximo auto-refresh: {DASHBOARD_REFRESH}s")
+    st.caption(f"Estado/KPIs: {FAST_REFRESH}s · Stats: {STATS_REFRESH}s · Gráficos: {DASHBOARD_REFRESH}s")
     st.caption(f"Umbral GAP: {GAP_THRESHOLD}s · DOWN: {DOWN_THRESHOLD}s")
 
 # -- Título ------------------------------------------------------------------
@@ -349,7 +355,8 @@ with st.sidebar:
 st.title("FlujoPRT — Monitoreo en tiempo real")
 st.caption(
     f"Bucket: `{S3_BUCKET}` · Prefix: `{METADATA_PREFIX}` · "
-    f"Refresh: {DASHBOARD_REFRESH}s · Santiago: {_ahora_chile().strftime('%H:%M:%S')}"
+    f"KPIs: {FAST_REFRESH}s · Stats: {STATS_REFRESH}s · Gráficos: {DASHBOARD_REFRESH}s · "
+    f"Santiago: {_ahora_chile().strftime('%H:%M:%S')}"
 )
 st.caption(f"v{VERSION}")
 
@@ -361,38 +368,45 @@ if fecha_str != hoy_str:
         "Ejecuta `validate_vehiculos.py` para generar los datos del día."
     )
 
-with st.spinner("Cargando metadata del día desde S3..."):
+# ---------------------------------------------------------------------------
+# Fragments de auto-actualización independiente
+# ---------------------------------------------------------------------------
+
+
+@st.fragment(run_every=FAST_REFRESH)
+def seccion_estado_y_kpis() -> None:
+    """Estado de detección vehicular, KPIs globales y tabla operacional."""
+    fecha_str = st.session_state.get("fecha_str", _ahora_chile().strftime("%Y/%m/%d"))
+    hoy_str_frag = _ahora_chile().strftime("%Y/%m/%d")
+
     df = cargar_dataset_fecha(fecha_str)
-    stats_pipeline = cargar_stats_hoy()
     info_validacion = estado_validacion_fecha(fecha_str)
 
-# -- Estado de detección vehicular (siempre visible) -------------------------
+    # -- Estado de detección vehicular -----------------------------------------
+    st.subheader("Estado de detección vehicular")
 
-st.subheader("Estado de detección vehicular")
+    _color_estado_val = {"sin_datos": "gray", "en_progreso": "orange", "completado": "green"}
+    _label_estado_val = {"sin_datos": "SIN DATOS", "en_progreso": "EN PROGRESO", "completado": "COMPLETADO"}
+    _est = info_validacion["estado"]
+    st.markdown(
+        f"**:{_color_estado_val[_est]}[{_label_estado_val[_est]}]**  "
+        f"· {info_validacion['n_jsonl']} JSONL · "
+        f"{len(info_validacion['plantas_con_jsonl'])}/{len(DENOMINADORES)} plantas"
+    )
 
-_color_estado_val = {"sin_datos": "gray", "en_progreso": "orange", "completado": "green"}
-_label_estado_val = {"sin_datos": "SIN DATOS", "en_progreso": "EN PROGRESO", "completado": "COMPLETADO"}
-_est = info_validacion["estado"]
-st.markdown(
-    f"**:{_color_estado_val[_est]}[{_label_estado_val[_est]}]**  "
-    f"· {info_validacion['n_jsonl']} JSONL · "
-    f"{len(info_validacion['plantas_con_jsonl'])}/{len(DENOMINADORES)} plantas"
-)
+    if info_validacion["plantas_con_jsonl"]:
+        st.caption("Plantas con JSONL: " + ", ".join(info_validacion["plantas_con_jsonl"]))
 
-if info_validacion["plantas_con_jsonl"]:
-    st.caption("Plantas con JSONL: " + ", ".join(info_validacion["plantas_con_jsonl"]))
+    if info_validacion["ultima_modificacion"]:
+        ult = info_validacion["ultima_modificacion"]
+        # ult viene de S3 LastModified (UTC naive); convertir a Santiago antes de restar
+        ult_santiago = ult.replace(tzinfo=ZoneInfo("UTC")).astimezone(CHILE_TZ).replace(tzinfo=None)
+        hace_min = (_ahora_chile() - ult_santiago).total_seconds() / 60
+        st.caption(f"Última actualización JSONL: {ult_santiago.strftime('%H:%M:%S')} (hace {hace_min:.0f} min)")
 
-if info_validacion["ultima_modificacion"]:
-    ult = info_validacion["ultima_modificacion"]
-    # ult viene de S3 LastModified (UTC naive); convertir a Santiago antes de restar
-    ult_santiago = ult.replace(tzinfo=ZoneInfo("UTC")).astimezone(CHILE_TZ).replace(tzinfo=None)
-    hace_min = (_ahora_chile() - ult_santiago).total_seconds() / 60
-    st.caption(f"Última actualización JSONL: {ult_santiago.strftime('%H:%M:%S')} (hace {hace_min:.0f} min)")
-
-if not df.empty:
-    st.caption(f"Total registros cargados: {len(df):,}")
-else:
-    if fecha_str == hoy_str:
+    if not df.empty:
+        st.caption(f"Total registros cargados: {len(df):,}")
+    elif fecha_str == hoy_str_frag:
         st.info(
             "validate_vehiculos.py aún no ha procesado imágenes para hoy. "
             "El script es incremental: los datos aparecen a medida que se procesa cada planta."
@@ -400,116 +414,114 @@ else:
     else:
         st.info(f"No hay registros de detección para {fecha_str}.")
 
-st.divider()
-
-# -- Header con KPIs globales ------------------------------------------------
-
-total_plantas = len(DENOMINADORES)
-if not df.empty:
-    tabla = tabla_estado_plantas(df)
-    activas = int((tabla["Estado"] == "OK").sum())
-    mb_total = df["mb_archivo"].sum()
-    bboxes_hoy = int(df["bboxes_total"].sum())
-    gaps = gaps_por_planta(df)
-    col_recientes = f"Últ. {VENTANA_RECIENTE_MIN} min"
-    capturas_recientes = int(tabla[col_recientes].sum())
-else:
-    tabla = pd.DataFrame()
-    activas = 0
-    mb_total = 0.0
-    bboxes_hoy = 0
-    gaps = pd.DataFrame(columns=["planta_id", "gap_inicio", "gap_fin", "duracion_s"])
-    col_recientes = f"Últ. {VENTANA_RECIENTE_MIN} min"
-    capturas_recientes = 0
-
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Plantas OK", f"{activas} / {total_plantas}")
-c2.metric("Capturas procesadas", f"{len(df):,}" if not df.empty else "—")
-c3.metric("Volumen analizado", f"{mb_total:.1f} MB")
-c4.metric("Vehículos (bbox)", f"{bboxes_hoy:,}")
-c5.metric(f"Capturas últ. {VENTANA_RECIENTE_MIN} min", capturas_recientes)
-
-st.divider()
-
-# -- Estadísticas acumuladas del pipeline ------------------------------------
-
-st.subheader("Estadísticas del pipeline (acumuladas desde inicio del proceso)")
-
-if stats_pipeline:
-    periodo_inicio = stats_pipeline.get("periodo_inicio", "—")
-    periodo_fin = stats_pipeline.get("periodo_fin", "—")
-    ts_act = stats_pipeline.get("timestamp_actualizacion", "")
-    uptime_pct = stats_pipeline.get("uptime_pct")
-    err_desc = stats_pipeline.get("errores_descarga", 0)
-    err_s3 = stats_pipeline.get("errores_s3", 0)
-    duplicadas = stats_pipeline.get("duplicadas_descartadas", 0)
-    total_subidas = stats_pipeline.get("total_subidas", 0)
-    version = stats_pipeline.get("version", "")
-
-    caption_parts = [f"Período: **{periodo_inicio}** — **{periodo_fin}**"]
-    if ts_act:
-        caption_parts.append(f"Actualizado: **{ts_act}**")
-    if version:
-        caption_parts.append(f"v{version}")
-    st.caption("  ·  ".join(caption_parts))
-
-    sp1, sp2, sp3, sp4, sp5 = st.columns(5)
-    sp1.metric(
-        "Uptime del pipeline",
-        f"{uptime_pct:.1f} %" if uptime_pct is not None else "—",
-    )
-    sp2.metric("Imágenes subidas", f"{total_subidas:,}")
-    sp3.metric("Errores de descarga", err_desc, delta=None)
-    sp4.metric("Errores S3", err_s3, delta=None)
-    sp5.metric("Duplicadas descartadas", duplicadas)
-else:
-    st.info(
-        "Aún no hay archivo de stats para hoy. "
-        "Se genera automáticamente cada vez que el pipeline imprime métricas "
-        f"(cada {DASHBOARD_REFRESH // 60} min aprox.)."
-    )
-
-st.divider()
-
-if df.empty:
-    st.info("Los gráficos de detección aparecerán cuando validate_vehiculos procese imágenes del día.")
-
-# -- Sección 1: Estado operacional ------------------------------------------
-
-if not df.empty:
-
-    # -- Sección 1: Estado operacional ----------------------------------------
-
-    def _color_estado(val: object) -> str:
-        colores = {
-            "OK": "background-color: #1f7a3a; color: white",
-            "GAP": "background-color: #b8860b; color: white",
-            "DOWN": "background-color: #a02020; color: white",
-            "FUERA DE HORARIO": "background-color: #444; color: #ccc",
-            "SIN DATOS": "background-color: #222; color: #888",
-        }
-        return colores.get(str(val), "")
-
-    def _color_recientes(val: object) -> str:
-        try:
-            return "background-color: #1f7a3a; color: white" if int(val) > 0 else "background-color: #333; color: #888"  # type: ignore[arg-type]
-        except (TypeError, ValueError):
-            return ""
-
-    st.subheader("1 · Estado operacional por planta")
-    st.dataframe(
-        tabla.style
-            .map(_color_estado, subset=["Estado"])
-            .map(_color_recientes, subset=[col_recientes])
-            .map(_color_recientes, subset=["Vehículos (bbox)"]),
-        use_container_width=True,
-        hide_index=True,
-    )
-
     st.divider()
 
-    # -- Sección 2: Volumen en el tiempo --------------------------------------
+    # -- KPIs globales ---------------------------------------------------------
+    total_plantas = len(DENOMINADORES)
+    col_recientes = f"Últ. {VENTANA_RECIENTE_MIN} min"
+    if not df.empty:
+        tabla = tabla_estado_plantas(df)
+        activas = int((tabla["Estado"] == "OK").sum())
+        mb_total = df["mb_archivo"].sum()
+        bboxes_hoy = int(df["bboxes_total"].sum())
+        capturas_recientes = int(tabla[col_recientes].sum())
+    else:
+        tabla = pd.DataFrame()
+        activas = 0
+        mb_total = 0.0
+        bboxes_hoy = 0
+        capturas_recientes = 0
 
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Plantas OK", f"{activas} / {total_plantas}")
+    c2.metric("Capturas procesadas", f"{len(df):,}" if not df.empty else "—")
+    c3.metric("Volumen analizado", f"{mb_total:.1f} MB")
+    c4.metric("Vehículos (bbox)", f"{bboxes_hoy:,}")
+    c5.metric(f"Capturas últ. {VENTANA_RECIENTE_MIN} min", capturas_recientes)
+
+    if not df.empty:
+        def _color_estado(val: object) -> str:
+            colores = {
+                "OK": "background-color: #1f7a3a; color: white",
+                "GAP": "background-color: #b8860b; color: white",
+                "DOWN": "background-color: #a02020; color: white",
+                "FUERA DE HORARIO": "background-color: #444; color: #ccc",
+                "SIN DATOS": "background-color: #222; color: #888",
+            }
+            return colores.get(str(val), "")
+
+        def _color_recientes(val: object) -> str:
+            try:
+                return "background-color: #1f7a3a; color: white" if int(val) > 0 else "background-color: #333; color: #888"  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                return ""
+
+        st.divider()
+        st.subheader("1 · Estado operacional por planta")
+        st.dataframe(
+            tabla.style
+                .map(_color_estado, subset=["Estado"])
+                .map(_color_recientes, subset=[col_recientes])
+                .map(_color_recientes, subset=["Vehículos (bbox)"]),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+@st.fragment(run_every=STATS_REFRESH)
+def seccion_stats_pipeline() -> None:
+    """Estadísticas acumuladas del pipeline (uptime, subidas, errores)."""
+    stats_pipeline = cargar_stats_hoy()
+
+    st.subheader("Estadísticas del pipeline (acumuladas desde inicio del proceso)")
+
+    if stats_pipeline:
+        periodo_inicio = stats_pipeline.get("periodo_inicio", "—")
+        periodo_fin = stats_pipeline.get("periodo_fin", "—")
+        ts_act = stats_pipeline.get("timestamp_actualizacion", "")
+        uptime_pct = stats_pipeline.get("uptime_pct")
+        err_desc = stats_pipeline.get("errores_descarga", 0)
+        err_s3 = stats_pipeline.get("errores_s3", 0)
+        duplicadas = stats_pipeline.get("duplicadas_descartadas", 0)
+        total_subidas = stats_pipeline.get("total_subidas", 0)
+        version = stats_pipeline.get("version", "")
+
+        caption_parts = [f"Período: **{periodo_inicio}** — **{periodo_fin}**"]
+        if ts_act:
+            caption_parts.append(f"Actualizado: **{ts_act}**")
+        if version:
+            caption_parts.append(f"v{version}")
+        st.caption("  ·  ".join(caption_parts))
+
+        sp1, sp2, sp3, sp4, sp5 = st.columns(5)
+        sp1.metric(
+            "Uptime del pipeline",
+            f"{uptime_pct:.1f} %" if uptime_pct is not None else "—",
+        )
+        sp2.metric("Imágenes subidas", f"{total_subidas:,}")
+        sp3.metric("Errores de descarga", err_desc, delta=None)
+        sp4.metric("Errores S3", err_s3, delta=None)
+        sp5.metric("Duplicadas descartadas", duplicadas)
+    else:
+        st.info(
+            "Aún no hay archivo de stats para hoy. "
+            "Se genera automáticamente cada vez que el pipeline imprime métricas "
+            f"(cada {DASHBOARD_REFRESH // 60} min aprox.)."
+        )
+
+
+@st.fragment(run_every=DASHBOARD_REFRESH)
+def seccion_graficos() -> None:
+    """Gráficos de análisis: volumen, heatmap, vehículos, latencia y gaps."""
+    fecha_str = st.session_state.get("fecha_str", _ahora_chile().strftime("%Y/%m/%d"))
+
+    df = cargar_dataset_fecha(fecha_str)
+
+    if df.empty:
+        st.info("Los gráficos de detección aparecerán cuando validate_vehiculos procese imágenes del día.")
+        return
+
+    # -- Sección 2: Volumen en el tiempo ---------------------------------------
     st.subheader("2 · Volumen analizado por hora")
 
     df_vol = (
@@ -531,8 +543,7 @@ if not df.empty:
 
     st.divider()
 
-    # -- Sección 3: Heatmap planta x hora -------------------------------------
-
+    # -- Sección 3: Heatmap planta x hora --------------------------------------
     st.subheader("3 · Capturas por planta × hora")
 
     heatmap = (
@@ -552,8 +563,7 @@ if not df.empty:
 
     st.divider()
 
-    # -- Sección 4: Vehículos detectados --------------------------------------
-
+    # -- Sección 4: Vehículos detectados ---------------------------------------
     st.subheader("4 · Vehículos detectados por planta")
 
     df_veh = (
@@ -576,8 +586,7 @@ if not df.empty:
 
     st.divider()
 
-    # -- Sección 5: Latencia --------------------------------------------------
-
+    # -- Sección 5: Latencia ---------------------------------------------------
     st.subheader("5 · Latencia de procesamiento YOLO (procesado − captura)")
 
     lat = df["latencia_s"].dropna()
@@ -601,8 +610,8 @@ if not df.empty:
     else:
         st.info("No hay datos de latencia todavía.")
 
-    # -- Gaps recientes -------------------------------------------------------
-
+    # -- Gaps recientes --------------------------------------------------------
+    gaps = gaps_por_planta(df)
     if not gaps.empty:
         st.divider()
         st.subheader("Gaps recientes")
@@ -615,10 +624,15 @@ if not df.empty:
             hide_index=True,
         )
 
+
 # ---------------------------------------------------------------------------
-# Auto-refresh: al terminar de renderizar, dormir y re-ejecutar el script.
+# Flujo principal: guardar fecha en session_state e invocar fragments
 # ---------------------------------------------------------------------------
 
-import time  # noqa: E402 — import tardío intencional, solo para el sleep final
-time.sleep(DASHBOARD_REFRESH)
-st.rerun()
+st.session_state["fecha_str"] = fecha_str
+
+seccion_estado_y_kpis()
+st.divider()
+seccion_stats_pipeline()
+st.divider()
+seccion_graficos()
