@@ -144,8 +144,9 @@ def estado_validacion_hoy() -> dict:
     )
     minutos_desde_actualizacion = (ahora_utc - ultima).total_seconds() / 60
 
-    # Extraer nombre de planta desde la ruta: metadata/capturas/YYYY/MM/DD/Planta/XXX.jsonl
-    plantas = sorted({o["key"].split("/")[4] for o in objetos if len(o["key"].split("/")) > 4})
+    # Ruta: metadata/capturas/YYYY/MM/DD/Planta/XXX.jsonl
+    #        [0]     [1]      [2]  [3] [4] [5]   [6]
+    plantas = sorted({o["key"].split("/")[5] for o in objetos if len(o["key"].split("/")) > 5})
 
     estado = "en_progreso" if minutos_desde_actualizacion < 10 else "completado"
     return {
@@ -341,8 +342,10 @@ if info_validacion["plantas_con_jsonl"]:
 
 if info_validacion["ultima_modificacion"]:
     ult = info_validacion["ultima_modificacion"]
-    hace_min = (_ahora_chile() - ult).total_seconds() / 60
-    st.caption(f"Última actualización JSONL: {ult.strftime('%H:%M:%S')} (hace {hace_min:.0f} min)")
+    # ult viene de S3 LastModified (UTC naive); convertir a Santiago antes de restar
+    ult_santiago = ult.replace(tzinfo=ZoneInfo("UTC")).astimezone(CHILE_TZ).replace(tzinfo=None)
+    hace_min = (_ahora_chile() - ult_santiago).total_seconds() / 60
+    st.caption(f"Última actualización JSONL: {ult_santiago.strftime('%H:%M:%S')} (hace {hace_min:.0f} min)")
 
 if not df.empty:
     st.caption(f"Total registros cargados: {len(df):,}")
