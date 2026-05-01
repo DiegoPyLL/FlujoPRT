@@ -40,6 +40,8 @@ GAP_THRESHOLD = int(os.getenv("GAP_THRESHOLD", "180"))
 DOWN_THRESHOLD = int(os.getenv("DOWN_THRESHOLD", "900"))
 VENTANA_RECIENTE_MIN = int(os.getenv("VENTANA_RECIENTE_MIN", "5"))
 
+VERSION = "1.0.0"
+
 CHILE_TZ = ZoneInfo("America/Santiago")
 
 
@@ -313,7 +315,7 @@ with st.sidebar:
 
 # -- Título ------------------------------------------------------------------
 
-st.title("FlujoPRT — Monitoreo en tiempo real")
+st.title(f"FlujoPRT — Monitoreo en tiempo real  v{VERSION}")
 st.caption(
     f"Bucket: `{S3_BUCKET}` · Prefix: `{METADATA_PREFIX}` · "
     f"Refresh: {DASHBOARD_REFRESH}s · Santiago: {_ahora_chile().strftime('%H:%M:%S')}"

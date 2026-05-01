@@ -64,6 +64,8 @@ CAMPOS_OBLIGATORIOS = ("s3_key", "planta", "fecha", "hora", "conteo", "deteccion
 RE_FECHA = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 RE_HORA  = re.compile(r"^\d{2}:\d{2}:\d{2}$")
 
+VERSION = "1.0.0"
+
 
 # =============================================================================
 # Logger
@@ -415,6 +417,7 @@ def main() -> int:
     fecha_proceso = date.today().strftime("%Y%m%d")
     ruta_log = DIR_REPORTS / f"proceso_{fecha_proceso}.log"
     logger = configurar_logger(ruta_log)
+    logger.info("procesar-registros v%s", VERSION)
     logger.info("=== Inicio procesamiento | prefijo=%s | solo_local=%s ===",
                 args.prefijo, args.solo_local)
 

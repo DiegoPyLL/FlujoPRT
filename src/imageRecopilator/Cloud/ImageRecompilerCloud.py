@@ -77,6 +77,8 @@ logging.basicConfig(
 
 logger = logging.getLogger("flujo-prt")
 
+VERSION = "1.0.0"
+
 
 # =========================
 # Cámaras
@@ -811,7 +813,7 @@ async def main():
     )
 
     logger.info("="*60)
-    logger.info("INICIANDO SISTEMA CAPTURA CCTV")
+    logger.info("INICIANDO SISTEMA CAPTURA CCTV  v%s", VERSION)
     logger.info(f"Event Loop: {'uvloop' if 'uvloop' in str(asyncio.get_event_loop_policy()) else 'asyncio'}")
     logger.info(f"Cámaras: {len(camaras)} | Intervalo: {INTERVALO}s")
     logger.info(f"JPEG Quality: {JPEG_QUALITY} | Workers S3: {NUM_UPLOADERS}")

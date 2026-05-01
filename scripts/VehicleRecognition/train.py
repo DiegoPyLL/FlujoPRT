@@ -16,6 +16,8 @@ from tqdm import tqdm
 
 from scripts.VehicleRecognition.model import resnet34
 
+VERSION = "1.0.0"
+
 
 def get_data_transform():
     """
@@ -204,6 +206,7 @@ def main():
     Ejecuta el flujo completo de entrenamiento: carga de datos, construccion del
     modelo, ciclo de entrenamiento y guardado del modelo.
     """
+    print("train v{}".format(VERSION))
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print("Usando dispositivo: {}".format(device))
 

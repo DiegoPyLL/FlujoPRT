@@ -96,13 +96,74 @@ Requiere credenciales AWS configuradas (`aws configure` o variables de entorno) 
 - Credenciales AWS: nunca commitearlas. `.env` está en el repo pero debe contener solo plantillas/placeholders (ver línea 1: `TODO("Modificar el ENV")`).
 - El `.env` actual tiene rutas locales de Windows y debe tratarse como ejemplo, no como fuente de verdad.
 
-## Reglas por Archivo
 
-### `scripts/VehicleRecognition/validate_vehiculos.py`
 
-**OBLIGATORIO:** Toda modificación a este archivo debe incrementar la constante `VERSION` en una unidad (patch: `1.0.0` → `1.0.1`, `1.0.1` → `1.0.2`, etc.). Sin excepción, incluso para cambios menores. El incremento debe hacerse en el mismo commit que la modificación.
+# Política de Versionado **OBLIGATORIO**
 
-## Qué hacer y qué no
+## Versión Base
+- `1.0.0` define la primera versión estable en producción.
+
+## Formato de Versión
+- Se utiliza el esquema: `MAJOR.MINOR.PATCH`
+
+### MAJOR
+- Se incrementa cuando:
+  - Se rompe compatibilidad hacia atrás
+  - Cambian APIs, contratos o estructuras críticas
+  - Se modifica la arquitectura de forma significativa
+
+### MINOR
+- Se incrementa cuando:
+  - Se agregan nuevas funcionalidades
+  - No se rompe compatibilidad existente
+
+### PATCH
+- Se incrementa cuando:
+  - Se corrigen errores
+  - Se realizan mejoras menores
+  - No se agregan funcionalidades nuevas
+
+---
+
+## Reglas de Evaluación de Cambios
+
+Antes de subir versión, cada cambio debe evaluarse con las siguientes preguntas:
+
+- ¿Rompe compatibilidad hacia atrás?
+- ¿Agrega funcionalidad nueva?
+- ¿Solo corrige errores?
+- ¿Impacta rendimiento o arquitectura?
+- ¿Requiere cambios en despliegue o infraestructura?
+
+### Decisión de Versión
+
+- Si **rompe compatibilidad** → incrementar `MAJOR`
+- Si **agrega funcionalidad sin romper** → incrementar `MINOR`
+- Si **solo corrige o ajusta** → incrementar `PATCH`
+
+---
+
+## Flujo de Versionado
+
+1. Desarrollo en ramas (`feature/*`, `fix/*`, etc.)
+
+2. Antes de merge a `main`:
+   - Documentar el cambio
+   - Clasificar el impacto
+
+3. Determinar nueva versión según reglas
+
+4. Actualizar versión en el proyecto
+
+5. Generar `CHANGELOG.md`
+
+6. Crear tag en git:
+   ```bash
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+
+
+## **Qué hacer y qué no**
 
 **Sí:**
 

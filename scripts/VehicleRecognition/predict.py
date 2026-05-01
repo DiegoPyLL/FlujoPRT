@@ -16,6 +16,8 @@ os.environ['KMP_DUPLICATE_LIB_OK'] = 'True'
 from scripts.VehicleRecognition.model import resnet34
 from PIL import Image, ImageDraw, ImageFont
 
+VERSION = "1.0.0"
+
 data_transform = transforms.Compose([
     transforms.ToTensor(),
     transforms.Resize(256),
@@ -152,6 +154,7 @@ def main():
     Ejecuta la prediccion de tipo de vehiculo, con soporte para prediccion
     en lote y visualizacion de resultados.
     """
+    print("predict v{}".format(VERSION))
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     class_indict = load_class_mapping('class_car.json')

@@ -2,6 +2,8 @@ import os
 from shutil import copy, rmtree
 import random
 
+VERSION = "1.0.0"
+
 img_dir = 'data'
 
 
@@ -13,6 +15,7 @@ def mk_file(file_path: str):
 
 
 def main():
+    print("dataset-split v{}".format(VERSION))
     # Fijar semilla para reproducibilidad
     random.seed(0)
 

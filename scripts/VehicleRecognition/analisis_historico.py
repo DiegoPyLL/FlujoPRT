@@ -49,7 +49,7 @@ MODELO_YOLO     = os.getenv("MODELO_YOLO", "yolov8m.pt")
 UMBRAL_CONF     = float(os.getenv("UMBRAL_CONFIANZA", "0.55"))
 _TZ             = ZoneInfo(os.getenv("TZ", "America/Santiago"))
 
-VERSION = "1"
+VERSION = "1.0.0"
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 _DIR_LOGS = Path(__file__).resolve().parent / "logs"
@@ -385,7 +385,7 @@ def main():
     args = _parse_args()
 
     logger.info("=" * 60)
-    logger.info("ANALISIS HISTORICO DETECCION VEHICULAR")
+    logger.info("ANALISIS HISTORICO DETECCION VEHICULAR  v%s", VERSION)
     logger.info("  Bucket        : %s", S3_BUCKET)
     logger.info("  Modelo        : %s", args.modelo)
     logger.info("  Fecha inicio  : %s", args.fecha_inicio or "(todo el bucket)")
