@@ -39,8 +39,9 @@ DASHBOARD_REFRESH = int(os.getenv("DASHBOARD_REFRESH", "300"))
 GAP_THRESHOLD = int(os.getenv("GAP_THRESHOLD", "180"))
 DOWN_THRESHOLD = int(os.getenv("DOWN_THRESHOLD", "900"))
 VENTANA_RECIENTE_MIN = int(os.getenv("VENTANA_RECIENTE_MIN", "5"))
+DIAS_FALLBACK = int(os.getenv("DIAS_FALLBACK", "7"))
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 CHILE_TZ = ZoneInfo("America/Santiago")
 
@@ -90,10 +91,9 @@ def s3_client():
     return boto3.client("s3", config=cfg)
 
 
-def listar_keys_hoy(s3, bucket: str, prefix: str) -> list[dict]:
-    """Retorna lista de dicts con 'key' y 'last_modified' para cada JSONL del día."""
-    hoy = _ahora_chile().strftime("%Y/%m/%d")
-    full_prefix = f"{prefix}/{hoy}/"
+def listar_keys_fecha(s3, bucket: str, prefix: str, fecha_str: str) -> list[dict]:
+    """Retorna lista de dicts con 'key' y 'last_modified' para cada JSONL de la fecha dada."""
+    full_prefix = f"{prefix}/{fecha_str}/"
     objetos: list[dict] = []
     paginator = s3.get_paginator("list_objects_v2")
     for page in paginator.paginate(Bucket=bucket, Prefix=full_prefix):
@@ -119,6 +119,21 @@ def descargar_jsonl(s3, bucket: str, key: str) -> list[dict]:
 
 
 @st.cache_data(ttl=DASHBOARD_REFRESH, show_spinner=False)
+def encontrar_fecha_con_datos() -> str:
+    """Retorna la fecha más reciente (hasta DIAS_FALLBACK días atrás) con JSONL en S3.
+    Si ninguna fecha tiene datos, retorna hoy (el dashboard mostrará vacío)."""
+    s3 = s3_client()
+    for dias in range(DIAS_FALLBACK):
+        fecha_str = (_ahora_chile() - timedelta(days=dias)).strftime("%Y/%m/%d")
+        full_prefix = f"{METADATA_PREFIX}/{fecha_str}/"
+        paginator = s3.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=S3_BUCKET, Prefix=full_prefix, MaxKeys=1):
+            if page.get("Contents"):
+                return fecha_str
+    return _ahora_chile().strftime("%Y/%m/%d")
+
+
+@st.cache_data(ttl=DASHBOARD_REFRESH, show_spinner=False)
 def cargar_stats_hoy() -> dict | None:
     """Lee el JSON de stats acumuladas que el pipeline escribe periódicamente a S3."""
     s3 = s3_client()
@@ -132,10 +147,10 @@ def cargar_stats_hoy() -> dict | None:
 
 
 @st.cache_data(ttl=DASHBOARD_REFRESH, show_spinner=False)
-def estado_validacion_hoy() -> dict:
-    """Infiere el estado de validate_vehiculos desde los JSONL disponibles en S3."""
+def estado_validacion_fecha(fecha_str: str) -> dict:
+    """Infiere el estado de validate_vehiculos desde los JSONL disponibles en S3 para la fecha dada."""
     s3 = s3_client()
-    objetos = listar_keys_hoy(s3, S3_BUCKET, METADATA_PREFIX)
+    objetos = listar_keys_fecha(s3, S3_BUCKET, METADATA_PREFIX, fecha_str)
     if not objetos:
         return {"estado": "sin_datos", "plantas_con_jsonl": [], "ultima_modificacion": None, "n_jsonl": 0}
 
@@ -160,9 +175,9 @@ def estado_validacion_hoy() -> dict:
 
 
 @st.cache_data(ttl=DASHBOARD_REFRESH, show_spinner=False)
-def cargar_dataset_hoy() -> pd.DataFrame:
+def cargar_dataset_fecha(fecha_str: str) -> pd.DataFrame:
     s3 = s3_client()
-    objetos = listar_keys_hoy(s3, S3_BUCKET, METADATA_PREFIX)
+    objetos = listar_keys_fecha(s3, S3_BUCKET, METADATA_PREFIX, fecha_str)
     if not objetos:
         return pd.DataFrame()
 
@@ -301,11 +316,27 @@ st.set_page_config(page_title="FlujoPRT · Live", layout="wide", page_icon="📸
 
 # -- Sidebar -----------------------------------------------------------------
 
+hoy_str = _ahora_chile().strftime("%Y/%m/%d")
+
 with st.sidebar:
     st.header("Controles")
 
+    # Buscar la fecha más reciente con datos (puede ser hoy u otro día anterior)
+    fecha_disponible_str = encontrar_fecha_con_datos()
+    fecha_disponible_dt = datetime.strptime(fecha_disponible_str, "%Y/%m/%d")
+
+    fecha_sel = st.date_input(
+        "Fecha a visualizar",
+        value=fecha_disponible_dt,
+        max_value=datetime.strptime(hoy_str, "%Y/%m/%d"),
+        format="YYYY/MM/DD",
+    )
+    fecha_str = fecha_sel.strftime("%Y/%m/%d")
+
     if st.button("Forzar recarga", use_container_width=True):
-        cargar_dataset_hoy.clear()
+        cargar_dataset_fecha.clear()
+        estado_validacion_fecha.clear()
+        encontrar_fecha_con_datos.clear()
         st.rerun()
 
     st.divider()
@@ -315,16 +346,25 @@ with st.sidebar:
 
 # -- Título ------------------------------------------------------------------
 
-st.title(f"FlujoPRT — Monitoreo en tiempo real  v{VERSION}")
+st.title("FlujoPRT — Monitoreo en tiempo real")
 st.caption(
     f"Bucket: `{S3_BUCKET}` · Prefix: `{METADATA_PREFIX}` · "
     f"Refresh: {DASHBOARD_REFRESH}s · Santiago: {_ahora_chile().strftime('%H:%M:%S')}"
 )
+st.caption(f"v{VERSION}")
+
+# Banner cuando se muestran datos históricos
+if fecha_str != hoy_str:
+    st.warning(
+        f"Mostrando datos de **{fecha_str}** · "
+        f"No hay JSONL de detección para hoy ({hoy_str}). "
+        "Ejecuta `validate_vehiculos.py` para generar los datos del día."
+    )
 
 with st.spinner("Cargando metadata del día desde S3..."):
-    df = cargar_dataset_hoy()
+    df = cargar_dataset_fecha(fecha_str)
     stats_pipeline = cargar_stats_hoy()
-    info_validacion = estado_validacion_hoy()
+    info_validacion = estado_validacion_fecha(fecha_str)
 
 # -- Estado de detección vehicular (siempre visible) -------------------------
 
@@ -352,10 +392,13 @@ if info_validacion["ultima_modificacion"]:
 if not df.empty:
     st.caption(f"Total registros cargados: {len(df):,}")
 else:
-    st.info(
-        "validate_vehiculos.py aún no ha procesado imágenes para hoy. "
-        "El script es incremental: los datos aparecen a medida que se procesa cada planta."
-    )
+    if fecha_str == hoy_str:
+        st.info(
+            "validate_vehiculos.py aún no ha procesado imágenes para hoy. "
+            "El script es incremental: los datos aparecen a medida que se procesa cada planta."
+        )
+    else:
+        st.info(f"No hay registros de detección para {fecha_str}.")
 
 st.divider()
 
