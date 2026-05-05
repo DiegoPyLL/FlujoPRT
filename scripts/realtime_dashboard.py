@@ -46,8 +46,9 @@ GAP_THRESHOLD = int(os.getenv("GAP_THRESHOLD", "180"))
 DOWN_THRESHOLD = int(os.getenv("DOWN_THRESHOLD", "900"))
 VENTANA_RECIENTE_MIN = int(os.getenv("VENTANA_RECIENTE_MIN", "5"))
 DIAS_FALLBACK = int(os.getenv("DIAS_FALLBACK", "7"))
+TASA_BIN_MIN = int(os.getenv("TASA_BIN_MIN", "15"))
 
-VERSION = "1.2.1"
+VERSION = "1.3.0"
 
 CHILE_TZ = ZoneInfo("America/Santiago")
 
@@ -319,6 +320,29 @@ def gaps_por_planta(df: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(partes, ignore_index=True).sort_values("gap_inicio", ascending=False)
 
 
+def _intervalo_captura(stats: dict | None) -> int:
+    """Retorna el intervalo de captura en segundos, priorizando stats de S3."""
+    if stats and "intervalo_s" in stats:
+        return int(stats["intervalo_s"])
+    return int(os.getenv("INTERVALO", "60"))
+
+
+def tasa_exito_capturas(df: pd.DataFrame, intervalo_s: int, bin_min: int = 15) -> pd.DataFrame:
+    if df.empty:
+        return pd.DataFrame()
+    capturas_esperadas = (bin_min * 60) / intervalo_s
+    return (
+        df.assign(bin=df["timestamp_captura"].dt.floor(f"{bin_min}min"))
+          .groupby(["bin", "planta_nombre"])
+          .size()
+          .reset_index(name="capturas_reales")
+          .assign(
+              capturas_esperadas=capturas_esperadas,
+              tasa_exito=lambda d: (d["capturas_reales"] / capturas_esperadas * 100).clip(upper=100),
+          )
+    )
+
+
 # ---------------------------------------------------------------------------
 # UI
 # ---------------------------------------------------------------------------
@@ -353,7 +377,7 @@ with st.sidebar:
     st.divider()
     st.caption(f"Hora Santiago: **{_ahora_chile().strftime('%H:%M:%S')}**")
     st.caption(f"Estado/KPIs: {FAST_REFRESH}s · Stats: {STATS_REFRESH}s · Gráficos: {DASHBOARD_REFRESH}s")
-    st.caption(f"Umbral GAP: {GAP_THRESHOLD}s · DOWN: {DOWN_THRESHOLD}s")
+    st.caption(f"Umbral GAP: {GAP_THRESHOLD}s · DOWN: {DOWN_THRESHOLD}s · Bin tasa: {TASA_BIN_MIN} min")
 
 # -- Título ------------------------------------------------------------------
 
@@ -388,7 +412,7 @@ def seccion_estado_y_kpis() -> None:
     info_validacion = estado_validacion_fecha(fecha_str)
 
     # -- Estado de detección vehicular -----------------------------------------
-    st.subheader("Estado de detección vehicular")
+    st.subheader("Estado del proceso de detección vehicular (validate_vehiculos)")
 
     _color_estado_val = {"sin_datos": "gray", "en_progreso": "orange", "completado": "green"}
     _label_estado_val = {"sin_datos": "SIN DATOS", "en_progreso": "EN PROGRESO", "completado": "COMPLETADO"}
@@ -462,7 +486,7 @@ def seccion_estado_y_kpis() -> None:
                 return ""
 
         st.divider()
-        st.subheader("1 · Estado operacional por planta")
+        st.subheader("1 · Estado operacional en tiempo real por planta")
         st.dataframe(
             tabla.style
                 .map(_color_estado, subset=["Estado"])
@@ -478,7 +502,7 @@ def seccion_stats_pipeline() -> None:
     """Estadísticas acumuladas del pipeline (uptime, subidas, errores)."""
     stats_pipeline = cargar_stats_hoy()
 
-    st.subheader("Estadísticas del pipeline (acumuladas desde inicio del proceso)")
+    st.subheader("Estadísticas del pipeline de captura (acumuladas desde inicio del proceso)")
 
     if stats_pipeline:
         periodo_inicio = stats_pipeline.get("periodo_inicio", "—")
@@ -527,7 +551,7 @@ def seccion_graficos() -> None:
         return
 
     # -- Sección 2: Volumen en el tiempo ---------------------------------------
-    st.subheader("2 · Volumen analizado por hora")
+    st.subheader("2 · MB de imágenes procesadas por hora y planta (aprox.)")
 
     df_vol = (
         df.assign(hora_bin=df["timestamp_captura"].dt.floor("h"))
@@ -549,7 +573,7 @@ def seccion_graficos() -> None:
     st.divider()
 
     # -- Sección 3: Heatmap planta x hora --------------------------------------
-    st.subheader("3 · Capturas por planta × hora")
+    st.subheader("3 · Capturas de imagen por planta y hora del día (aprox.)")
 
     heatmap = (
         df.groupby(["planta_id", "hora"]).size().reset_index(name="capturas")
@@ -569,7 +593,7 @@ def seccion_graficos() -> None:
     st.divider()
 
     # -- Sección 4: Vehículos detectados ---------------------------------------
-    st.subheader("4 · Vehículos detectados por planta")
+    st.subheader("4 · Vehículos detectados por tipo y planta (bboxes YOLO)")
 
     df_veh = (
         df.groupby("planta_nombre", as_index=False)[["v_auto", "v_moto", "v_bus", "v_camion"]]
@@ -592,7 +616,7 @@ def seccion_graficos() -> None:
     st.divider()
 
     # -- Sección 5: Latencia ---------------------------------------------------
-    st.subheader("5 · Latencia de procesamiento YOLO (procesado − captura)")
+    st.subheader("5 · Latencia YOLO por imagen: tiempo entre captura y fin de procesamiento")
 
     lat = df["latencia_s"].dropna()
     if not lat.empty:
@@ -615,11 +639,39 @@ def seccion_graficos() -> None:
     else:
         st.info("No hay datos de latencia todavía.")
 
+    # -- Sección 6: Tasa de éxito de captura -----------------------------------
+    st.divider()
+    st.subheader("6 · Tasa de éxito de captura por planta vs. esperada (aprox.)")
+
+    _stats_intervalo = cargar_stats_hoy()
+    _intervalo_s = _intervalo_captura(_stats_intervalo)
+    df_tasa = tasa_exito_capturas(df, intervalo_s=_intervalo_s, bin_min=TASA_BIN_MIN)
+
+    if not df_tasa.empty:
+        _esp = int(TASA_BIN_MIN * 60 / _intervalo_s)
+        st.caption(
+            f"Intervalo captura: **{_intervalo_s}s** · "
+            f"Bin: **{TASA_BIN_MIN} min** · "
+            f"Esperadas/bin: **{_esp}**"
+        )
+        fig_tasa = px.line(
+            df_tasa,
+            x="bin",
+            y="tasa_exito",
+            color="planta_nombre",
+            labels={"bin": "Hora", "tasa_exito": "Tasa de éxito (%)", "planta_nombre": "Planta"},
+            range_y=[0, 105],
+        )
+        fig_tasa.add_hline(y=80, line_dash="dot", line_color="orange", annotation_text="80%")
+        fig_tasa.update_xaxes(tickformat="%H:%M")
+        fig_tasa.update_layout(height=420, legend_title=None)
+        st.plotly_chart(fig_tasa, use_container_width=True)
+
     # -- Gaps recientes --------------------------------------------------------
     gaps = gaps_por_planta(df)
     if not gaps.empty:
         st.divider()
-        st.subheader("Gaps recientes")
+        st.subheader("Gaps recientes de captura por planta")
         gaps_view = gaps.head(30).copy()
         gaps_view["duracion_min"] = (gaps_view["duracion_s"] / 60).round(1)
         gaps_view["planta"] = gaps_view["planta_id"].map(NOMBRE_POR_ID).fillna(gaps_view["planta_id"])

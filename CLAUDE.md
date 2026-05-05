@@ -23,7 +23,7 @@ src/imageRecopilator/
   Cloud/ImageRecompilerCloud.py   # Módulo principal (captura + metadata integrada)
   Local/ImageRecompilerLocal.py   # Variante local (desarrollo/offline)
 data/
-  plantas_revision_tecnica.csv    # Fuente de datos: 116 plantas
+  plantas_revision_tecnica.csv    # Datos de referencia de plantas
 docs/
   ComandosEjecucionCloud.txt      # Guía de comandos operativos
   DEPLOY_AWS.md                   # Guia de despliegue en AWS e IAM

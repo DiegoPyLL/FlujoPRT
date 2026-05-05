@@ -69,7 +69,7 @@ FlujoPRT/
 ├── TODO.md                               # Pendientes del proyecto
 ├── pytest.ini
 ├── data/
-│   ├── plantas_revision_tecnica.csv      # Fuente de datos: 116 plantas nacionales
+│   ├── plantas_revision_tecnica.csv      # Datos de referencia de plantas
 │   └── plantas_revision_tecnica.xlsx
 ├── docs/
 │   ├── ComandosEjecucionCloud.txt        # Guia de comandos operativos en EC2
